@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-PLAYT24 Unlimited Account Creator
+PLAYT24 Unlimited Account Creator - Gmail Only
 Deployed on Render with Flask Web Interface
+All emails are @gmail.com with clean alphanumeric usernames
 """
 
 import requests
@@ -19,7 +20,7 @@ app = Flask(__name__)
 
 # Configuration
 BASE_URL = "https://playt24.com"
-REFERRAL_CODES = ["8EE65EF6", "7DD54DE5", "6CC43CD4", "5BB32BC3", "4AA21AB2"]  # Multiple referral codes
+REFERRAL_CODES = ["8EE65EF6"]
 
 # Statistics
 stats = {
@@ -37,6 +38,8 @@ stats = {
 # Account storage
 accounts = []
 account_lock = threading.Lock()
+used_emails = set()
+email_lock = threading.Lock()
 
 # Rate limiting
 request_times = deque(maxlen=100)
@@ -95,15 +98,79 @@ LAST_NAMES = [
     "Hayes", "Chavez", "Gibson", "Bryant", "Ellis", "Stevens", "Murray", "Ford", "Marshall", "Owens"
 ]
 
-# ============= EMAIL DOMAINS =============
+# ============= CLEAN EMAIL GENERATORS (NO SPECIAL CHARACTERS) =============
 
-EMAIL_DOMAINS = [
-    "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "protonmail.com",
-    "mail.com", "gmx.com", "zoho.com", "icloud.com", "aol.com",
-    "yandex.com", "fastmail.com", "tutanota.com", "posteo.net", "runbox.com",
-    "web.de", "gmx.net", "email.com", "usa.com", "inbox.com",
-    "rediffmail.com", "indiatimes.com", "myntra.com", "nykaa.com", "flipkart.com"
-]
+def generate_clean_username():
+    """
+    Generate clean alphanumeric username for Gmail
+    Only letters (a-z) and numbers (0-9) - no dots, plus, or special chars
+    """
+    patterns = [
+        # Pattern 1: word + number (e.g., john12345)
+        lambda: f"{random.choice(FIRST_NAMES).lower()}{random.randint(10, 9999)}",
+        
+        # Pattern 2: word + word + number (e.g., johnsmith123)
+        lambda: f"{random.choice(FIRST_NAMES).lower()}{random.choice(LAST_NAMES).lower()}{random.randint(10, 999)}",
+        
+        # Pattern 3: random letters + number (e.g., abcdef123)
+        lambda: f"{''.join(random.choices(string.ascii_lowercase, k=random.randint(5, 8)))}{random.randint(100, 9999)}",
+        
+        # Pattern 4: word + random letters (e.g., johnabc)
+        lambda: f"{random.choice(FIRST_NAMES).lower()}{''.join(random.choices(string.ascii_lowercase, k=random.randint(3, 5)))}",
+        
+        # Pattern 5: number + word (e.g., 123john)
+        lambda: f"{random.randint(10, 999)}{random.choice(FIRST_NAMES).lower()}",
+        
+        # Pattern 6: full word + number (e.g., gamingking123)
+        lambda: f"{random.choice(['gamer', 'player', 'winner', 'champion', 'master', 'pro', 'elite', 'legend', 'hero', 'star', 'ace', 'vip', 'king', 'queen', 'boss', 'play', 'game', 'win', 'cash', 'prize', 'battle', 'arena', 'royal', 'prime', 'ultra', 'max', 'super', 'mega', 'grand'])}{random.randint(100, 9999)}",
+        
+        # Pattern 7: first letter + last name + number (e.g., jsmith123)
+        lambda: f"{random.choice(FIRST_NAMES)[0].lower()}{random.choice(LAST_NAMES).lower()}{random.randint(10, 999)}",
+        
+        # Pattern 8: two words combined (e.g., johnsmith)
+        lambda: f"{random.choice(FIRST_NAMES).lower()}{random.choice(LAST_NAMES).lower()}{random.randint(10, 999)}",
+        
+        # Pattern 9: random numbers + letters (e.g., 123abc456)
+        lambda: f"{random.randint(100, 999)}{''.join(random.choices(string.ascii_lowercase, k=random.randint(3, 5)))}{random.randint(10, 99)}",
+        
+        # Pattern 10: year based (e.g., john2024)
+        lambda: f"{random.choice(FIRST_NAMES).lower()}{random.randint(2020, 2026)}",
+        
+        # Pattern 11: simple random (e.g., user123456)
+        lambda: f"user{random.randint(10000, 999999)}",
+        
+        # Pattern 12: test based (e.g., test123456)
+        lambda: f"test{random.randint(10000, 999999)}",
+        
+        # Pattern 13: play based (e.g., play123456)
+        lambda: f"play{random.randint(10000, 999999)}",
+        
+        # Pattern 14: win based (e.g., win123456)
+        lambda: f"win{random.randint(10000, 999999)}",
+        
+        # Pattern 15: game based (e.g., game123456)
+        lambda: f"game{random.randint(10000, 999999)}",
+        
+        # Pattern 16: cash based (e.g., cash123456)
+        lambda: f"cash{random.randint(10000, 999999)}",
+    ]
+    
+    return random.choice(patterns)()
+
+def generate_unique_gmail():
+    """
+    Generate a unique @gmail.com email with clean alphanumeric username
+    No dots, no plus signs, no special characters
+    """
+    with email_lock:
+        while True:
+            username = generate_clean_username()
+            email = f"{username}@gmail.com"
+            
+            # Ensure email is unique
+            if email not in used_emails:
+                used_emails.add(email)
+                return email
 
 # ============= PHONE NUMBER GENERATORS =============
 
@@ -113,18 +180,12 @@ def generate_phone():
     rest = ''.join(random.choices(string.digits, k=9))
     return first + rest
 
-def generate_phone_alternative():
-    """Generate alternative format phone number"""
-    prefixes = ["987654", "987654", "987654", "987654", "987654", "987654", "987654", "987654", "987654", "987654"]
-    prefix = random.choice(prefixes)
-    rest = ''.join(random.choices(string.digits, k=4))
-    return prefix + rest
-
 # ============= PASSWORD GENERATORS =============
 
 def generate_password():
-    """Generate strong random password"""
+    """Generate strong random password (alphanumeric + special)"""
     length = random.randint(12, 18)
+    # Include special chars in password as they're allowed
     chars = string.ascii_letters + string.digits + "!@#$%^&*()_+-=<>?"
     return ''.join(random.choices(chars, k=length))
 
@@ -149,53 +210,6 @@ def generate_name():
     
     return first, last
 
-def generate_full_name():
-    """Generate full name with possible spaces/hyphens"""
-    first, last = generate_name()
-    
-    # 10% chance for hyphenated last name
-    if random.random() < 0.1:
-        last = f"{last}-{random.choice(LAST_NAMES)}"
-    
-    # 5% chance for middle name
-    if random.random() < 0.05:
-        middle = random.choice(FIRST_NAMES[:20])
-        return f"{first} {middle} {last}"
-    
-    return f"{first} {last}"
-
-# ============= EMAIL GENERATORS =============
-
-def generate_email(index):
-    """Generate unique email with various formats"""
-    domain = random.choice(EMAIL_DOMAINS)
-    name_variations = [
-        f"user_{index}_{random.randint(1000, 99999)}",
-        f"test_{index}_{random.randint(1000, 99999)}",
-        f"account_{index}_{random.randint(1000, 99999)}",
-        f"user{index}_{random.randint(1000, 99999)}",
-        f"{random.choice(FIRST_NAMES).lower()}{index}_{random.randint(1000, 99999)}",
-        f"{random.choice(LAST_NAMES).lower()}{index}_{random.randint(1000, 99999)}",
-        f"dev_{index}_{random.randint(1000, 99999)}",
-        f"demo_{index}_{random.randint(1000, 99999)}",
-        f"{''.join(random.choices(string.ascii_lowercase, k=random.randint(5,10)))}{index}",
-        f"playt24_{index}_{random.randint(1000, 99999)}"
-    ]
-    
-    username = random.choice(name_variations)
-    
-    # Randomly add dots or pluses (gmail trick)
-    if "@gmail.com" in domain and random.random() < 0.3:
-        if random.random() < 0.5:
-            # Dot trick
-            pos = random.randint(1, len(username)-1)
-            username = username[:pos] + "." + username[pos:]
-        else:
-            # Plus trick
-            username = f"{username}+{random.randint(100, 999)}"
-    
-    return f"{username}@{domain}"
-
 # ============= ACCOUNT CREATION =============
 
 def create_single_account(index, referral_code=None):
@@ -209,7 +223,7 @@ def create_single_account(index, referral_code=None):
     fcm_token = ''.join(random.choices(string.hexdigits.lower(), k=32))
     
     first_name, last_name = generate_name()
-    email = generate_email(index)
+    email = generate_unique_gmail()
     
     data = {
         "first_name": first_name,
@@ -231,7 +245,8 @@ def create_single_account(index, referral_code=None):
                 "User-Agent": random.choice([
                     "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36",
                     "Mozilla/5.0 (Linux; Android 11; SM-G998B) AppleWebKit/537.36",
-                    "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36"
+                    "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36",
+                    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36"
                 ])
             }
         )
@@ -315,7 +330,7 @@ def continuous_creation():
                     stats["rate"] = len(request_times) / (newest - oldest) * 60
         
         # Small delay between batches
-        time.sleep(random.uniform(1, 3))
+        time.sleep(random.uniform(0.5, 1.5))
 
 # ============= FLASK WEB INTERFACE =============
 
@@ -347,11 +362,16 @@ HTML_TEMPLATE = """
         h1 { border-bottom: 1px solid #333; padding-bottom: 10px; }
         .refresh-btn { background: #222; color: #00ff00; border: 1px solid #00ff00; padding: 5px 15px; float: right; }
         .refresh-btn:hover { background: #333; }
+        .email-preview { color: #00ddff; font-size: 0.85em; }
+        .badge-gmail { background: #ea4335; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; }
+        .badge-clean { background: #34a853; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>⚡ PLAYT24 Account Creator
+            <span class="badge-gmail">GMAIL</span>
+            <span class="badge-clean">CLEAN</span>
             <button class="refresh-btn" onclick="location.reload()">⟳ Refresh</button>
         </h1>
         
@@ -420,7 +440,7 @@ HTML_TEMPLATE = """
         </div>
         
         <div class="mt-4">
-            <h4>Recent Accounts (last 20)</h4>
+            <h4>Recent Accounts (last 20) <span class="badge-gmail">@gmail.com</span></h4>
             <div class="account-list">
                 <table class="table table-dark table-sm">
                     <thead>
@@ -434,7 +454,7 @@ HTML_TEMPLATE = """
                         {% for acc in stats.recent_accounts %}
                         <tr>
                             <td>{{ acc.time }}</td>
-                            <td>{{ acc.email }}</td>
+                            <td class="email-preview">{{ acc.email }}</td>
                             <td>{{ acc.uid }}</td>
                         </tr>
                         {% endfor %}
@@ -446,6 +466,7 @@ HTML_TEMPLATE = """
         <div class="mt-4">
             <a href="/download" class="btn btn-success btn-sm">⬇ Download Accounts ({{ stats.accounts_created }})</a>
             <a href="/stats" class="btn btn-info btn-sm">📊 JSON Stats</a>
+            <span style="float:right;color:#555;font-size:0.8em;">Clean alphanumeric emails only</span>
         </div>
     </div>
     
@@ -558,6 +579,7 @@ def clear_accounts():
         stats["failed"] = 0
         stats["accounts_created"] = 0
         stats["recent_accounts"].clear()
+        used_emails.clear()
     return jsonify({"status": "cleared"})
 
 @app.route('/ping', methods=['GET'])
