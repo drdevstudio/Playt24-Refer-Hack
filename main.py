@@ -20,7 +20,7 @@ app = Flask(__name__)
 
 # Configuration
 BASE_URL = "https://playt24.com"
-REFERRAL_CODES = ["8EE65EF6"]
+REFERRAL_CODES = ["CBA14991"]
 
 # Statistics
 stats = {
