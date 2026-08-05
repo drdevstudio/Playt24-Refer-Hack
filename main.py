@@ -3,6 +3,7 @@
 PLAYT24 Unlimited Account Creator - Gmail Only
 Deployed on Render with Flask Web Interface
 All emails are @gmail.com with clean alphanumeric usernames
+NO REFERRAL CODE
 """
 
 import requests
@@ -20,7 +21,7 @@ app = Flask(__name__)
 
 # Configuration
 BASE_URL = "https://playt24.com"
-REFERRAL_CODES = ["CBA14991"]
+# REFERRAL_CODES removed - accounts created without referral
 
 # Statistics
 stats = {
@@ -210,12 +211,10 @@ def generate_name():
     
     return first, last
 
-# ============= ACCOUNT CREATION =============
+# ============= ACCOUNT CREATION (NO REFERRAL) =============
 
-def create_single_account(index, referral_code=None):
-    """Create a single account with retry logic"""
-    if not referral_code:
-        referral_code = random.choice(REFERRAL_CODES)
+def create_single_account(index):
+    """Create a single account with NO referral code"""
     
     phone = generate_phone()
     password = random.choice([generate_password, generate_password_pattern])()
@@ -225,6 +224,7 @@ def create_single_account(index, referral_code=None):
     first_name, last_name = generate_name()
     email = generate_unique_gmail()
     
+    # Data WITHOUT referral code
     data = {
         "first_name": first_name,
         "last_name": last_name,
@@ -232,8 +232,8 @@ def create_single_account(index, referral_code=None):
         "email": email,
         "phone": phone,
         "device": android_id,
-        "token": fcm_token,
-        "enter_refer_code": referral_code
+        "token": fcm_token
+        # "enter_refer_code" REMOVED
     }
     
     try:
@@ -261,7 +261,7 @@ def create_single_account(index, referral_code=None):
                 "phone": phone,
                 "uid": uid,
                 "session_id": result.get('session_id', ''),
-                "referral_code": referral_code,
+                "referral_code": "",  # Empty - no referral
                 "first_name": first_name,
                 "last_name": last_name,
                 "created_at": datetime.now().isoformat()
@@ -291,7 +291,7 @@ def create_single_account(index, referral_code=None):
             stats["total_registrations"] += 1
         return False, str(e)
 
-def create_batch_accounts(batch_size=5):
+def create_batch_accounts(batch_size=100):
     """Create multiple accounts in parallel"""
     threads = []
     results = []
@@ -317,8 +317,8 @@ def continuous_creation():
         with account_lock:
             stats["active_threads"] = len(threading.enumerate())
         
-        # Create batch of 5 accounts
-        batch_results = create_batch_accounts(5)
+        # Create batch of 100 accounts
+        batch_results = create_batch_accounts(100)
         
         # Update rate
         with rate_lock:
@@ -365,6 +365,7 @@ HTML_TEMPLATE = """
         .email-preview { color: #00ddff; font-size: 0.85em; }
         .badge-gmail { background: #ea4335; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; }
         .badge-clean { background: #34a853; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; }
+        .badge-no-referral { background: #ff6b35; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; }
     </style>
 </head>
 <body>
@@ -372,6 +373,7 @@ HTML_TEMPLATE = """
         <h1>⚡ PLAYT24 Account Creator
             <span class="badge-gmail">GMAIL</span>
             <span class="badge-clean">CLEAN</span>
+            <span class="badge-no-referral">NO REFERRAL</span>
             <button class="refresh-btn" onclick="location.reload()">⟳ Refresh</button>
         </h1>
         
@@ -466,7 +468,7 @@ HTML_TEMPLATE = """
         <div class="mt-4">
             <a href="/download" class="btn btn-success btn-sm">⬇ Download Accounts ({{ stats.accounts_created }})</a>
             <a href="/stats" class="btn btn-info btn-sm">📊 JSON Stats</a>
-            <span style="float:right;color:#555;font-size:0.8em;">Clean alphanumeric emails only</span>
+            <span style="float:right;color:#555;font-size:0.8em;">Clean alphanumeric emails only | No referral code</span>
         </div>
     </div>
     
@@ -543,9 +545,9 @@ def download_accounts():
         if not accounts:
             return "No accounts found", 404
         
-        csv_data = "Email,Password,Phone,UID,SessionID,ReferralCode,FirstName,LastName,CreatedAt\n"
+        csv_data = "Email,Password,Phone,UID,SessionID,FirstName,LastName,CreatedAt\n"
         for acc in accounts:
-            csv_data += f"{acc['email']},{acc['password']},{acc['phone']},{acc['uid']},{acc['session_id']},{acc['referral_code']},{acc['first_name']},{acc['last_name']},{acc['created_at']}\n"
+            csv_data += f"{acc['email']},{acc['password']},{acc['phone']},{acc['uid']},{acc['session_id']},{acc['first_name']},{acc['last_name']},{acc['created_at']}\n"
     
     return csv_data, 200, {
         'Content-Type': 'text/csv',
