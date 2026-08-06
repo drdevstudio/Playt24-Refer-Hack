@@ -20,7 +20,7 @@ app = Flask(__name__)
 # Configuration
 BASE_URL = "https://jhingalalaprint.xyz"
 API_URL = f"{BASE_URL}/api.php"
-REFERRAL_CODE = "RGA100003"
+REFERRAL_CODE = "RGA100010"
 
 # Statistics
 stats = {
