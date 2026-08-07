@@ -6,306 +6,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ClashX24 Brute Force Tool</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        /* ... (keep all existing styles) ... */
         
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
-        }
-        
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }
-        
-        .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-        }
-        
-        .header p {
-            opacity: 0.9;
-            font-size: 1.1em;
-        }
-        
-        .main-content {
-            padding: 30px;
-        }
-        
-        .input-section {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        
-        .input-group {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-        
-        .input-group label {
-            font-weight: 600;
-            color: #333;
-        }
-        
-        .input-group input {
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 16px;
-            transition: all 0.3s;
-        }
-        
-        .input-group input:focus {
-            border-color: #667eea;
-            outline: none;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-        
-        .button-group {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        
-        .btn {
-            padding: 12px 24px;
-            border: none;
-            border-radius: 10px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-            flex: 1;
-            min-width: 120px;
-        }
-        
-        .btn-primary {
-            background: #667eea;
-            color: white;
-        }
-        
-        .btn-primary:hover {
-            background: #5a67d8;
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }
-        
-        .btn-success {
-            background: #48bb78;
-            color: white;
-        }
-        
-        .btn-success:hover {
-            background: #38a169;
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(72, 187, 120, 0.4);
-        }
-        
-        .btn-danger {
-            background: #fc8181;
-            color: white;
-        }
-        
-        .btn-danger:hover {
-            background: #f56565;
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(252, 129, 129, 0.4);
-        }
-        
-        .btn-warning {
+        .resume-badge {
             background: #f6ad55;
-            color: white;
-        }
-        
-        .btn-warning:hover {
-            background: #ed8936;
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(246, 173, 85, 0.4);
-        }
-        
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none !important;
-        }
-        
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
-            margin: 20px 0;
-        }
-        
-        .stat-card {
-            background: #f7fafc;
-            padding: 15px;
-            border-radius: 10px;
-            text-align: center;
-        }
-        
-        .stat-card .value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #2d3748;
-        }
-        
-        .stat-card .label {
-            font-size: 12px;
-            color: #718096;
-            margin-top: 5px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        
-        .stat-card.success .value {
-            color: #48bb78;
-        }
-        
-        .stat-card.danger .value {
-            color: #fc8181;
-        }
-        
-        .stat-card.warning .value {
-            color: #f6ad55;
-        }
-        
-        .stat-card.info .value {
-            color: #667eea;
-        }
-        
-        .logs-container {
-            background: #1a202c;
-            border-radius: 10px;
-            padding: 20px;
-            margin-top: 20px;
-            max-height: 500px;
-            overflow-y: auto;
-        }
-        
-        .logs-container::-webkit-scrollbar {
-            width: 8px;
-        }
-        
-        .logs-container::-webkit-scrollbar-track {
-            background: #2d3748;
-            border-radius: 10px;
-        }
-        
-        .logs-container::-webkit-scrollbar-thumb {
-            background: #667eea;
-            border-radius: 10px;
-        }
-        
-        .log-entry {
-            color: #e2e8f0;
-            padding: 5px 0;
-            font-family: 'Courier New', monospace;
-            font-size: 13px;
-            border-bottom: 1px solid #2d3748;
-            display: flex;
-            gap: 10px;
-        }
-        
-        .log-entry .timestamp {
-            color: #718096;
-            min-width: 70px;
-        }
-        
-        .log-entry .message {
-            flex: 1;
-        }
-        
-        .log-entry.success .message {
-            color: #48bb78;
-        }
-        
-        .log-entry.error .message {
-            color: #fc8181;
-        }
-        
-        .log-entry.info .message {
-            color: #63b3ed;
-        }
-        
-        .log-entry.warning .message {
-            color: #f6ad55;
-        }
-        
-        .status-badge {
-            display: inline-block;
+            color: #744210;
             padding: 4px 12px;
             border-radius: 20px;
             font-size: 12px;
             font-weight: 600;
+            display: inline-block;
+            margin-left: 10px;
         }
         
-        .status-badge.running {
-            background: #48bb78;
-            color: white;
-        }
-        
-        .status-badge.stopped {
-            background: #fc8181;
-            color: white;
-        }
-        
-        .status-badge.idle {
-            background: #a0aec0;
-            color: white;
-        }
-        
-        .progress-bar {
-            width: 100%;
-            height: 20px;
-            background: #e2e8f0;
+        .saved-state-notice {
+            background: #feebc8;
+            border: 1px solid #f6ad55;
+            padding: 15px;
             border-radius: 10px;
-            overflow: hidden;
             margin: 10px 0;
+            display: none;
         }
         
-        .progress-bar .fill {
-            height: 100%;
-            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-            transition: width 0.5s;
-            width: 0%;
-        }
-        
-        @media (max-width: 768px) {
-            .input-section {
-                grid-template-columns: 1fr;
-            }
-            
-            .button-group {
-                flex-direction: column;
-            }
-            
-            .btn {
-                width: 100%;
-            }
-            
-            .header h1 {
-                font-size: 1.8em;
-            }
+        .saved-state-notice.show {
+            display: block;
         }
     </style>
 </head>
@@ -313,10 +37,20 @@
     <div class="container">
         <div class="header">
             <h1>🚀 ClashX24 Brute Force Tool</h1>
-            <p>Automated OTP brute force with real-time monitoring</p>
+            <p>Automated OTP brute force with persistent state</p>
         </div>
         
         <div class="main-content">
+            <!-- Saved State Notice -->
+            <div id="savedStateNotice" class="saved-state-notice">
+                <strong>💾 Saved State Found!</strong><br>
+                <span id="savedStateInfo">Previous session was running. You can resume or start fresh.</span>
+                <div style="margin-top: 10px;">
+                    <button class="btn btn-success" id="resumeBtn" style="flex: 0 0 auto; padding: 8px 20px;">🔄 Resume</button>
+                    <button class="btn btn-danger" id="clearStateBtn" style="flex: 0 0 auto; padding: 8px 20px;">🗑️ Clear State</button>
+                </div>
+            </div>
+            
             <div class="input-section">
                 <div class="input-group">
                     <label>📱 Phone Number</label>
@@ -362,6 +96,10 @@
                     <div class="value" id="foundOtp">-</div>
                     <div class="label">Found OTP</div>
                 </div>
+                <div class="stat-card info">
+                    <div class="value" id="lastOtpTried">-</div>
+                    <div class="label">Last OTP Tried</div>
+                </div>
             </div>
             
             <div class="progress-bar">
@@ -370,7 +108,10 @@
             
             <div style="display: flex; justify-content: space-between; align-items: center; margin: 10px 0;">
                 <h3 style="color: #2d3748;">📋 Live Logs</h3>
-                <span id="logCount" style="color: #718096;">0 entries</span>
+                <div>
+                    <span id="logCount" style="color: #718096; margin-right: 15px;">0 entries</span>
+                    <span id="stateIndicator" style="color: #718096; font-size: 12px;"></span>
+                </div>
             </div>
             <div class="logs-container" id="logsContainer">
                 <div class="log-entry info">
@@ -384,6 +125,7 @@
     <script>
         let eventSource = null;
         let statusInterval = null;
+        let isInitialLoad = true;
         
         function showMessage(message, type = 'info') {
             const msgDiv = document.getElementById('statusMessage');
@@ -408,6 +150,26 @@
             document.getElementById('speedCount').textContent = data.speed ? data.speed.toFixed(1) : '0';
             document.getElementById('timeElapsed').textContent = data.elapsed_time ? Math.floor(data.elapsed_time) + 's' : '0s';
             document.getElementById('foundOtp').textContent = data.found_otp || '-';
+            document.getElementById('lastOtpTried').textContent = data.last_otp_tried || '-';
+            
+            // Update state indicator
+            const stateIndicator = document.getElementById('stateIndicator');
+            if (data.has_saved_state) {
+                stateIndicator.textContent = '💾 State saved';
+                stateIndicator.style.color = '#f6ad55';
+            } else {
+                stateIndicator.textContent = '';
+            }
+            
+            // Show saved state notice
+            const savedNotice = document.getElementById('savedStateNotice');
+            if (data.has_saved_state && !data.is_running && !data.completed && !data.found_otp) {
+                savedNotice.classList.add('show');
+                document.getElementById('savedStateInfo').textContent = 
+                    `Phone: ${data.phone_number || 'Unknown'} | Attempts: ${data.total_attempts} | Last OTP: ${data.last_otp_tried || 'None'}`;
+            } else {
+                savedNotice.classList.remove('show');
+            }
             
             const statusBadge = document.getElementById('statusBadge');
             if (data.is_running) {
@@ -416,6 +178,9 @@
             } else if (data.found_otp) {
                 statusBadge.textContent = '✅ Completed';
                 statusBadge.style.color = '#48bb78';
+            } else if (data.has_saved_state) {
+                statusBadge.textContent = '💾 Saved';
+                statusBadge.style.color = '#f6ad55';
             } else {
                 statusBadge.textContent = '⏸️ Idle';
                 statusBadge.style.color = '#a0aec0';
@@ -424,6 +189,12 @@
             // Update button states
             document.getElementById('startBruteforceBtn').disabled = data.is_running;
             document.getElementById('stopBruteforceBtn').disabled = !data.is_running;
+            
+            // Update phone number if saved
+            if (data.phone_number && isInitialLoad) {
+                document.getElementById('phoneNumber').value = data.phone_number;
+                isInitialLoad = false;
+            }
         }
         
         function fetchStatus() {
@@ -468,6 +239,62 @@
             document.getElementById('logCount').textContent = container.children.length + ' entries';
         }
         
+        // Resume button
+        document.getElementById('resumeBtn').addEventListener('click', function() {
+            const phoneNumber = document.getElementById('phoneNumber').value.trim();
+            const maxWorkers = parseInt(document.getElementById('maxWorkers').value) || 10;
+            
+            if (!phoneNumber) {
+                showMessage('Please enter phone number', 'error');
+                return;
+            }
+            
+            document.getElementById('savedStateNotice').classList.remove('show');
+            
+            fetch('/start-bruteforce', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    phone_number: phoneNumber,
+                    max_workers: maxWorkers,
+                    resume: true
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage(`🔄 Resuming from OTP ${data.start_from || 0}...`, 'success');
+                } else {
+                    showMessage('❌ Failed to resume: ' + data.message, 'error');
+                }
+            })
+            .catch(err => {
+                showMessage('❌ Error: ' + err.message, 'error');
+            });
+        });
+        
+        // Clear state button
+        document.getElementById('clearStateBtn').addEventListener('click', function() {
+            if (!confirm('Are you sure you want to clear the saved state? This will reset all progress.')) return;
+            
+            fetch('/reset-state', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('savedStateNotice').classList.remove('show');
+                    showMessage('🗑️ State cleared successfully', 'success');
+                    fetchStatus();
+                }
+            })
+            .catch(err => {
+                showMessage('❌ Error: ' + err.message, 'error');
+            });
+        });
+        
+        // Send OTP button
         document.getElementById('sendOtpBtn').addEventListener('click', function() {
             const phoneNumber = document.getElementById('phoneNumber').value.trim();
             
@@ -501,6 +328,7 @@
             });
         });
         
+        // Start brute force button
         document.getElementById('startBruteforceBtn').addEventListener('click', function() {
             const phoneNumber = document.getElementById('phoneNumber').value.trim();
             const maxWorkers = parseInt(document.getElementById('maxWorkers').value) || 10;
@@ -518,7 +346,8 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     phone_number: phoneNumber,
-                    max_workers: maxWorkers
+                    max_workers: maxWorkers,
+                    resume: false
                 })
             })
             .then(res => res.json())
@@ -538,6 +367,7 @@
             });
         });
         
+        // Stop brute force button
         document.getElementById('stopBruteforceBtn').addEventListener('click', function() {
             if (!confirm('Are you sure you want to stop the brute force?')) return;
             
@@ -563,6 +393,7 @@
             });
         });
         
+        // Clear logs button
         document.getElementById('clearLogsBtn').addEventListener('click', function() {
             const container = document.getElementById('logsContainer');
             container.innerHTML = '';
