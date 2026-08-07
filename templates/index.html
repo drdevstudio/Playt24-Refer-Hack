@@ -6,14 +6,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🔓 ClashX24 - Brute Force Terminal</title>
     <style>
-        /* ===== HACKER THEME CSS ===== */
         @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
         
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         
         body {
             font-family: 'Share Tech Mono', 'Courier New', monospace;
@@ -26,7 +21,6 @@
                 radial-gradient(ellipse at 90% 80%, rgba(0, 255, 65, 0.05) 0%, transparent 50%);
         }
         
-        /* Matrix rain effect background */
         body::before {
             content: '';
             position: fixed;
@@ -51,15 +45,12 @@
             background: rgba(10, 10, 10, 0.95);
             border: 2px solid #00ff41;
             border-radius: 8px;
-            box-shadow: 
-                0 0 30px rgba(0, 255, 65, 0.1),
-                inset 0 0 30px rgba(0, 255, 65, 0.05);
+            box-shadow: 0 0 30px rgba(0, 255, 65, 0.1), inset 0 0 30px rgba(0, 255, 65, 0.05);
             overflow: hidden;
             position: relative;
             z-index: 1;
         }
         
-        /* Scanning line effect */
         .container::after {
             content: '';
             position: absolute;
@@ -141,11 +132,8 @@
             50% { opacity: 0.5; transform: scale(0.8); }
         }
         
-        .main-content {
-            padding: 30px 40px;
-        }
+        .main-content { padding: 30px 40px; }
         
-        /* ===== Input Section ===== */
         .input-section {
             display: grid;
             grid-template-columns: 2fr 1fr 1fr;
@@ -171,10 +159,7 @@
             opacity: 0.7;
         }
         
-        .input-group label .prompt {
-            color: #00ff41;
-            opacity: 1;
-        }
+        .input-group label .prompt { color: #00ff41; opacity: 1; }
         
         .input-group input {
             background: rgba(0, 0, 0, 0.8);
@@ -194,11 +179,8 @@
             background: rgba(0, 255, 65, 0.05);
         }
         
-        .input-group input::placeholder {
-            color: rgba(0, 255, 65, 0.2);
-        }
+        .input-group input::placeholder { color: rgba(0, 255, 65, 0.2); }
         
-        /* ===== Buttons ===== */
         .button-group {
             display: grid;
             grid-template-columns: 1fr 1fr 0.5fr 0.5fr;
@@ -234,9 +216,7 @@
             transition: left 0.5s;
         }
         
-        .btn:hover::before {
-            left: 100%;
-        }
+        .btn:hover::before { left: 100%; }
         
         .btn:hover {
             border-color: #00ff41;
@@ -244,57 +224,21 @@
             transform: translateY(-1px);
         }
         
-        .btn:active {
-            transform: translateY(1px);
-        }
+        .btn:active { transform: translateY(1px); }
+        .btn:disabled { opacity: 0.3; cursor: not-allowed; transform: none !important; }
         
-        .btn:disabled {
-            opacity: 0.3;
-            cursor: not-allowed;
-            transform: none !important;
-        }
+        .btn-primary { border-color: rgba(0, 100, 255, 0.5); color: #4a9eff; }
+        .btn-primary:hover { border-color: #4a9eff; box-shadow: 0 0 30px rgba(0, 100, 255, 0.1); }
         
-        .btn-primary {
-            border-color: rgba(0, 100, 255, 0.5);
-            color: #4a9eff;
-        }
+        .btn-success { border-color: rgba(0, 255, 65, 0.5); color: #00ff41; }
+        .btn-success:hover { border-color: #00ff41; box-shadow: 0 0 30px rgba(0, 255, 65, 0.2); }
         
-        .btn-primary:hover {
-            border-color: #4a9eff;
-            box-shadow: 0 0 30px rgba(0, 100, 255, 0.1);
-        }
+        .btn-danger { border-color: rgba(255, 0, 0, 0.5); color: #ff4444; }
+        .btn-danger:hover { border-color: #ff4444; box-shadow: 0 0 30px rgba(255, 0, 0, 0.2); }
         
-        .btn-success {
-            border-color: rgba(0, 255, 65, 0.5);
-            color: #00ff41;
-        }
+        .btn-warning { border-color: rgba(255, 200, 0, 0.5); color: #ffcc00; }
+        .btn-warning:hover { border-color: #ffcc00; box-shadow: 0 0 30px rgba(255, 200, 0, 0.2); }
         
-        .btn-success:hover {
-            border-color: #00ff41;
-            box-shadow: 0 0 30px rgba(0, 255, 65, 0.2);
-        }
-        
-        .btn-danger {
-            border-color: rgba(255, 0, 0, 0.5);
-            color: #ff4444;
-        }
-        
-        .btn-danger:hover {
-            border-color: #ff4444;
-            box-shadow: 0 0 30px rgba(255, 0, 0, 0.2);
-        }
-        
-        .btn-warning {
-            border-color: rgba(255, 200, 0, 0.5);
-            color: #ffcc00;
-        }
-        
-        .btn-warning:hover {
-            border-color: #ffcc00;
-            box-shadow: 0 0 30px rgba(255, 200, 0, 0.2);
-        }
-        
-        /* ===== Status Message ===== */
         .status-message {
             padding: 12px 20px;
             border-radius: 4px;
@@ -304,35 +248,12 @@
             border-left: 3px solid;
         }
         
-        .status-message.show {
-            display: block;
-        }
+        .status-message.show { display: block; }
+        .status-message.success { background: rgba(0, 255, 65, 0.05); border-color: #00ff41; color: #00ff41; }
+        .status-message.error { background: rgba(255, 0, 0, 0.05); border-color: #ff4444; color: #ff4444; }
+        .status-message.warning { background: rgba(255, 200, 0, 0.05); border-color: #ffcc00; color: #ffcc00; }
+        .status-message.info { background: rgba(0, 100, 255, 0.05); border-color: #4a9eff; color: #4a9eff; }
         
-        .status-message.success {
-            background: rgba(0, 255, 65, 0.05);
-            border-color: #00ff41;
-            color: #00ff41;
-        }
-        
-        .status-message.error {
-            background: rgba(255, 0, 0, 0.05);
-            border-color: #ff4444;
-            color: #ff4444;
-        }
-        
-        .status-message.warning {
-            background: rgba(255, 200, 0, 0.05);
-            border-color: #ffcc00;
-            color: #ffcc00;
-        }
-        
-        .status-message.info {
-            background: rgba(0, 100, 255, 0.05);
-            border-color: #4a9eff;
-            color: #4a9eff;
-        }
-        
-        /* ===== Stats Grid ===== */
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
@@ -349,9 +270,7 @@
             transition: all 0.3s;
         }
         
-        .stat-card:hover {
-            border-color: rgba(0, 255, 65, 0.3);
-        }
+        .stat-card:hover { border-color: rgba(0, 255, 65, 0.3); }
         
         .stat-card .value {
             font-size: 28px;
@@ -374,42 +293,7 @@
         .stat-card.info .value { color: #4a9eff; }
         .stat-card.purple .value { color: #9b59b6; }
         
-        .stat-card .status-badge {
-            display: inline-block;
-            padding: 2px 12px;
-            border-radius: 20px;
-            font-size: 11px;
-            font-weight: bold;
-            letter-spacing: 1px;
-            margin-top: 5px;
-        }
-        
-        .stat-card .status-badge.running {
-            background: rgba(0, 255, 65, 0.2);
-            color: #00ff41;
-            animation: pulse 1s infinite;
-        }
-        
-        .stat-card .status-badge.idle {
-            background: rgba(255, 255, 255, 0.05);
-            color: rgba(255, 255, 255, 0.3);
-        }
-        
-        .stat-card .status-badge.found {
-            background: rgba(0, 255, 65, 0.3);
-            color: #00ff41;
-        }
-        
-        .stat-card .status-badge.saved {
-            background: rgba(255, 200, 0, 0.2);
-            color: #ffcc00;
-            animation: pulse 2s infinite;
-        }
-        
-        /* ===== Progress Bar ===== */
-        .progress-container {
-            margin: 15px 0 20px 0;
-        }
+        .progress-container { margin: 15px 0 20px 0; }
         
         .progress-bar {
             width: 100%;
@@ -447,7 +331,6 @@
             letter-spacing: 1px;
         }
         
-        /* ===== Logs Container ===== */
         .logs-header {
             display: flex;
             justify-content: space-between;
@@ -478,23 +361,10 @@
             font-size: 13px;
         }
         
-        .logs-container::-webkit-scrollbar {
-            width: 6px;
-        }
-        
-        .logs-container::-webkit-scrollbar-track {
-            background: rgba(0, 0, 0, 0.5);
-            border-radius: 3px;
-        }
-        
-        .logs-container::-webkit-scrollbar-thumb {
-            background: rgba(0, 255, 65, 0.3);
-            border-radius: 3px;
-        }
-        
-        .logs-container::-webkit-scrollbar-thumb:hover {
-            background: rgba(0, 255, 65, 0.5);
-        }
+        .logs-container::-webkit-scrollbar { width: 6px; }
+        .logs-container::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.5); border-radius: 3px; }
+        .logs-container::-webkit-scrollbar-thumb { background: rgba(0, 255, 65, 0.3); border-radius: 3px; }
+        .logs-container::-webkit-scrollbar-thumb:hover { background: rgba(0, 255, 65, 0.5); }
         
         .log-entry {
             padding: 4px 0;
@@ -522,7 +392,6 @@
         .log-entry.info .message { color: #4a9eff; }
         .log-entry.warning .message { color: #ffcc00; }
         
-        /* ===== Saved State Notice ===== */
         .saved-state-notice {
             background: rgba(255, 200, 0, 0.05);
             border: 1px solid rgba(255, 200, 0, 0.2);
@@ -532,44 +401,27 @@
             display: none;
         }
         
-        .saved-state-notice.show {
-            display: block;
-        }
+        .saved-state-notice.show { display: block; }
+        .saved-state-notice .title { color: #ffcc00; font-size: 14px; letter-spacing: 1px; }
+        .saved-state-notice .info { color: rgba(255, 200, 0, 0.6); font-size: 12px; margin: 8px 0 12px 0; }
+        .saved-state-notice .actions { display: flex; gap: 10px; }
+        .saved-state-notice .actions .btn { padding: 6px 18px; font-size: 12px; flex: 0 0 auto; }
         
-        .saved-state-notice .title {
-            color: #ffcc00;
-            font-size: 14px;
+        .auto-resume-badge {
+            background: rgba(0, 255, 65, 0.1);
+            color: #00ff41;
+            padding: 2px 10px;
+            border-radius: 3px;
+            font-size: 10px;
             letter-spacing: 1px;
+            margin-left: 10px;
+            border: 1px solid rgba(0, 255, 65, 0.2);
         }
         
-        .saved-state-notice .info {
-            color: rgba(255, 200, 0, 0.6);
-            font-size: 12px;
-            margin: 8px 0 12px 0;
-        }
-        
-        .saved-state-notice .actions {
-            display: flex;
-            gap: 10px;
-        }
-        
-        .saved-state-notice .actions .btn {
-            padding: 6px 18px;
-            font-size: 12px;
-            flex: 0 0 auto;
-        }
-        
-        /* ===== Responsive ===== */
         @media (max-width: 1024px) {
-            .input-section {
-                grid-template-columns: 1fr 1fr;
-            }
-            .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            .button-group {
-                grid-template-columns: 1fr 1fr;
-            }
+            .input-section { grid-template-columns: 1fr 1fr; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .button-group { grid-template-columns: 1fr 1fr; }
         }
         
         @media (max-width: 768px) {
@@ -577,18 +429,9 @@
             .header { padding: 20px; }
             .header h1 { font-size: 1.8em; margin-left: 20px; }
             .header::before { left: 10px; top: 25px; font-size: 18px; }
-            
-            .input-section {
-                grid-template-columns: 1fr;
-                padding: 15px;
-            }
-            .button-group {
-                grid-template-columns: 1fr;
-            }
-            .stats-grid {
-                grid-template-columns: 1fr 1fr;
-                gap: 10px;
-            }
+            .input-section { grid-template-columns: 1fr; padding: 15px; }
+            .button-group { grid-template-columns: 1fr; }
+            .stats-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
             .stat-card .value { font-size: 20px; }
             .logs-container { max-height: 250px; }
         }
@@ -601,41 +444,22 @@
             .stat-card .value { font-size: 16px; }
         }
         
-        /* ===== Animations ===== */
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(-10px); }
             to { opacity: 1; transform: translateY(0); }
         }
         
-        .log-entry {
-            animation: fadeIn 0.3s ease;
-        }
-        
-        /* Glitch effect on header */
-        .glitch {
-            position: relative;
-        }
-        
-        .glitch::after {
-            content: '🔓 ClashX24 Terminal v2.0';
-            position: absolute;
-            left: 2px;
-            top: 2px;
-            color: rgba(0, 255, 65, 0.1);
-            z-index: -1;
-        }
+        .log-entry { animation: fadeIn 0.3s ease; }
     </style>
 </head>
 <body>
     <div class="container">
-        <!-- Header -->
         <div class="header">
-            <h1 class="glitch">
-                <span class="blink">▶</span> CLASHX24 <span style="color: rgba(0,255,65,0.3);">//</span> BRUTE FORCE
-            </h1>
+            <h1><span class="blink">▶</span> CLASHX24 <span style="color: rgba(0,255,65,0.3);">//</span> BRUTE FORCE</h1>
             <div class="subtitle">
                 <span class="status-dot online"></span>
                 TERMINAL v2.0 :: <span id="connectionStatus">CONNECTED</span>
+                <span id="autoResumeBadge" class="auto-resume-badge" style="display:none;">🔄 AUTO-RESUME</span>
             </div>
         </div>
         
@@ -662,7 +486,7 @@
                 </div>
                 <div class="input-group">
                     <label><span class="prompt">$</span> STATUS</label>
-                    <div style="padding: 12px 15px; color: rgba(0,255,65,0.3); font-size: 14px;" id="statusBadge2">IDLE</div>
+                    <div style="padding: 12px 15px; color: rgba(0,255,65,0.3); font-size: 14px;" id="statusBadge2">○ IDLE</div>
                 </div>
             </div>
             
@@ -733,15 +557,13 @@
         let eventSource = null;
         let statusInterval = null;
         let isInitialLoad = true;
+        let autoResumed = false;
         
         function showMessage(message, type = 'info') {
             const msgDiv = document.getElementById('statusMessage');
             msgDiv.textContent = message;
             msgDiv.className = 'status-message show ' + type;
-            
-            setTimeout(() => {
-                msgDiv.className = 'status-message';
-            }, 5000);
+            setTimeout(() => { msgDiv.className = 'status-message'; }, 8000);
         }
         
         function updateStatus(data) {
@@ -767,6 +589,14 @@
             } else {
                 statusBadge.textContent = '○ IDLE';
                 statusBadge.style.color = 'rgba(0,255,65,0.3)';
+            }
+            
+            // Auto-resume badge
+            const autoResumeBadge = document.getElementById('autoResumeBadge');
+            if (data.has_saved_state && data.phone_number) {
+                autoResumeBadge.style.display = 'inline-block';
+            } else {
+                autoResumeBadge.style.display = 'none';
             }
             
             // State indicator
@@ -796,6 +626,15 @@
             if (data.phone_number && isInitialLoad) {
                 document.getElementById('phoneNumber').value = data.phone_number;
                 isInitialLoad = false;
+                
+                // Auto-resume if there's a saved state
+                if (data.has_saved_state && !data.is_running && !data.completed && !data.found_otp && !autoResumed) {
+                    autoResumed = true;
+                    setTimeout(() => {
+                        showMessage('🔄 Auto-resuming from saved state...', 'info');
+                        document.getElementById('resumeBtn').click();
+                    }, 2000);
+                }
             }
         }
         
@@ -838,7 +677,6 @@
             
             document.getElementById('logCount').textContent = container.children.length + ' entries';
             
-            // Keep max 500 logs in DOM
             if (container.children.length > 500) {
                 container.removeChild(container.children[0]);
             }
@@ -852,7 +690,7 @@
             const maxWorkers = parseInt(document.getElementById('maxWorkers').value) || 10;
             
             if (!phoneNumber) {
-                showMessage('Enter phone number first', 'error');
+                showMessage('✕ Enter phone number first', 'error');
                 return;
             }
             
@@ -870,7 +708,7 @@
             .then(res => res.json())
             .then(data => {
                 if (data.success) {
-                    showMessage(`↻ Resuming from OTP ${data.start_from || 0}...`, 'success');
+                    showMessage(`🔄 Resuming from OTP ${data.start_from || 0}...`, 'success');
                 } else {
                     showMessage('✕ Resume failed: ' + data.message, 'error');
                 }
@@ -1012,12 +850,20 @@
         
         // ===== Init =====
         setupLogStream();
-        statusInterval = setInterval(fetchStatus, 2000);
+        statusInterval = setInterval(fetchStatus, 1500);
         fetchStatus();
         
         console.log('🔓 ClashX24 Terminal initialized');
-        console.log('📡 Status updates every 2s');
-        console.log('💾 State persistence enabled');
+        console.log('📡 Status updates every 1.5s');
+        console.log('💾 Auto-resume enabled');
+        
+        // Restore logs from server
+        fetch('/logs')
+            .then(res => res.json())
+            .then(logs => {
+                logs.forEach(log => addLogToUI(log));
+            })
+            .catch(err => console.error('Error loading logs:', err));
     </script>
 </body>
 </html>
