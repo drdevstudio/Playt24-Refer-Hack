@@ -22,10 +22,10 @@ app = Flask(__name__)
 
 # ============= CONFIGURATION =============
 BASE_URL = "https://s2-api.digicroz.com"
-MAX_WORKERS = 50  # Number of concurrent registration threads
-PROXY_BATCH_SIZE = 200  # Proxies to fetch at a time
-MIN_PROXY_QUEUE = 30  # Minimum proxies before refill
-REGISTRATION_TIMEOUT = 10
+MAX_WORKERS = 30  # Reduced for Render free tier stability
+PROXY_BATCH_SIZE = 200
+MIN_PROXY_QUEUE = 20
+REGISTRATION_TIMEOUT = 15
 
 # ============= GLOBAL STATE =============
 STATE = {
@@ -78,14 +78,18 @@ FIRST_NAMES = [
     "Aisha", "Kabir", "Zara", "Arjun", "Mira", "Karan", "Riya", "Dev", "Sara", "Aditya",
     "James", "Mary", "John", "Patricia", "Robert", "Jennifer", "Michael", "Linda", "William", "Elizabeth",
     "David", "Barbara", "Richard", "Susan", "Joseph", "Jessica", "Thomas", "Sarah", "Charles", "Karen",
-    "Christopher", "Nancy", "Daniel", "Lisa", "Matthew", "Betty", "Anthony", "Helen", "Mark", "Sandra"
+    "Christopher", "Nancy", "Daniel", "Lisa", "Matthew", "Betty", "Anthony", "Helen", "Mark", "Sandra",
+    "Vishal", "Nisha", "Gaurav", "Swati", "Anand", "Kajal", "Pankaj", "Shreya", "Deepak", "Manisha",
+    "Sanjay", "Ritu", "Rajesh", "Sneha", "Rakesh", "Pallavi", "Mukesh", "Shilpa", "Bharat", "Jyoti"
 ]
 
 LAST_NAMES = [
     "Sharma", "Verma", "Patel", "Kumar", "Singh", "Reddy", "Rao", "Joshi", "Gupta", "Mehta",
     "Choudhary", "Desai", "Nair", "Menon", "Iyer", "Pillai", "Acharya", "Bhatt", "Das", "Mishra",
     "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez",
-    "Hernandez", "Lopez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee"
+    "Hernandez", "Lopez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee",
+    "Perez", "Thompson", "White", "Harris", "Sanchez", "Clark", "Ramirez", "Lewis", "Robinson", "Walker",
+    "Young", "Allen", "King", "Wright", "Scott", "Torres", "Nguyen", "Hill", "Flores", "Green"
 ]
 
 def generate_name():
@@ -103,10 +107,11 @@ def generate_username():
         lambda: f"{random.choice(FIRST_NAMES).lower()}{random.choice(LAST_NAMES).lower()}{random.randint(10, 999)}",
         lambda: f"{''.join(random.choices(string.ascii_lowercase, k=random.randint(5, 8)))}{random.randint(100, 9999)}",
         lambda: f"user{random.randint(10000, 999999)}",
-        lambda: f"play{random.randint(10000, 999999)}",
-        lambda: f"game{random.randint(10000, 999999)}",
-        lambda: f"win{random.randint(10000, 999999)}",
-        lambda: f"{random.choice(['gamer', 'player', 'winner', 'champion', 'master', 'pro', 'elite', 'legend', 'hero'])}{random.randint(100, 9999)}",
+        lambda: f"player{random.randint(10000, 999999)}",
+        lambda: f"gamer{random.randint(10000, 999999)}",
+        lambda: f"winner{random.randint(10000, 999999)}",
+        lambda: f"{random.choice(['pro', 'elite', 'legend', 'hero', 'star', 'ace', 'vip', 'king', 'queen', 'boss'])}{random.randint(100, 9999)}",
+        lambda: f"{random.choice(['tech', 'code', 'web', 'app', 'dev', 'pro', 'max', 'ultra', 'super', 'mega'])}{random.randint(100, 9999)}",
     ]
     return random.choice(patterns)()
 
@@ -115,8 +120,9 @@ def generate_phone():
     return random.choice(['6','7','8','9']) + ''.join(random.choices(string.digits, k=9))
 
 def generate_email():
-    """Generate random email"""
-    return f"{generate_username()}@{random.choice(['gmail.com'])}"
+    """Generate random email - mostly Gmail for better acceptance"""
+    providers = ['gmail.com', 'gmail.com', 'gmail.com', 'yahoo.com', 'outlook.com']
+    return f"{generate_username()}@{random.choice(providers)}"
 
 def generate_password():
     """Generate strong password"""
@@ -131,7 +137,8 @@ def fetch_raw_proxies():
         "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all",
         "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
         "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
-        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"
+        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+        "https://raw.githubusercontent.com/roosterkid/openproxylist/main/http.txt"
     ]
     
     raw_proxies = set()
@@ -144,7 +151,7 @@ def fetch_raw_proxies():
                 lines = resp.text.strip().split('\n')
                 for line in lines:
                     proxy = line.strip()
-                    if ":" in proxy:
+                    if ":" in proxy and not proxy.startswith('#'):
                         raw_proxies.add(proxy)
         except Exception as e:
             log_sys(f"SYSTEM: Failed to fetch from {url}", "warn")
@@ -226,7 +233,7 @@ def register_single_account(worker_id):
     email = generate_email()
     password = generate_password()
     
-    # Build tRPC request
+    # Build tRPC request - MATCHING EXACT FORMAT FROM THE SUCCESSFUL RESPONSE
     url = "https://s2-api.digicroz.com/trpc/rebelXArena/webApp/rebelXArena/auth.register?batch=1"
     
     headers = {
@@ -235,7 +242,13 @@ def register_single_account(worker_id):
         "content-type": "application/json",
         "origin": "https://web-app.rebelxarena.com",
         "referer": "https://web-app.rebelxarena.com/",
-        "user-agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.{worker_id} Safari/537.36"
+        "sec-ch-ua": "\"Not=A?Brand\";v=\"99\", \"Google Chrome\";v=\"151\", \"Chromium\";v=\"151\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Linux\"",
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "cross-site",
+        "user-agent": f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.{worker_id} Safari/537.36"
     }
     
     payload = {
@@ -261,60 +274,98 @@ def register_single_account(worker_id):
         if response.status_code == 200:
             try:
                 result = response.json()
-                # Check for success (tRPC response format)
-                if "0" in result and "json" in result["0"]:
-                    data = result["0"]["json"]
-                    if data and "uid" in data and data.get("uid"):
-                        account_data = {
-                            "email": email,
-                            "password": password,
-                            "phone": phone,
-                            "username": username,
-                            "first_name": first_name,
-                            "last_name": last_name,
-                            "uid": data.get("uid"),
-                            "created_at": datetime.now().isoformat(),
-                            "proxy": proxy
-                        }
+                
+                # Debug: Log the response structure
+                log_sys(f"[W{worker_id}] Response received", "info", target=email, proxy=proxy)
+                
+                # Parse the tRPC response format
+                # The response is an array with the result
+                if isinstance(result, list) and len(result) > 0:
+                    first_result = result[0]
+                    
+                    # Check if we have a result with data
+                    if "result" in first_result and "data" in first_result["result"]:
+                        data = first_result["result"]["data"]
                         
-                        with ACCOUNT_LOCK:
-                            ACCOUNTS.append(account_data)
-                            STATE["successful"] += 1
-                            STATE["recent_accounts"].appendleft({
-                                "email": email,
-                                "username": username,
-                                "uid": data.get("uid"),
-                                "time": datetime.now().strftime("%H:%M:%S")
-                            })
-                        
-                        log_sys(f"[W{worker_id}] Account created: {username}", "success", target=email, proxy=proxy)
-                        return True, account_data
+                        # The JSON data is nested inside
+                        if "json" in data:
+                            json_data = data["json"]
+                            
+                            # Check for success status
+                            if json_data.get("status") == "success" and "result" in json_data:
+                                user_result = json_data["result"]
+                                
+                                # Extract user data
+                                user_data = user_result.get("userData", {})
+                                access_token = user_result.get("accessToken", "")
+                                refresh_token = user_result.get("refreshToken", "")
+                                
+                                # Get user ID from either userData or direct
+                                user_id = user_data.get("userId") or user_result.get("userId")
+                                
+                                if user_id:
+                                    account_data = {
+                                        "email": email,
+                                        "password": password,
+                                        "phone": phone,
+                                        "username": username,
+                                        "first_name": first_name,
+                                        "last_name": last_name,
+                                        "user_id": user_id,
+                                        "access_token": access_token[:50] + "...",  # Truncate for display
+                                        "refresh_token": refresh_token[:50] + "...",
+                                        "created_at": datetime.now().isoformat(),
+                                        "proxy": proxy
+                                    }
+                                    
+                                    with ACCOUNT_LOCK:
+                                        ACCOUNTS.append(account_data)
+                                        STATE["successful"] += 1
+                                        STATE["recent_accounts"].appendleft({
+                                            "email": email,
+                                            "username": username,
+                                            "user_id": user_id,
+                                            "time": datetime.now().strftime("%H:%M:%S")
+                                        })
+                                    
+                                    log_sys(f"[W{worker_id}] ✅ Account created: {username} (ID: {user_id})", "success", target=email, proxy=proxy)
+                                    return True, account_data
+                                else:
+                                    log_sys(f"[W{worker_id}] No user ID in response", "warn", target=email, proxy=proxy)
+                            else:
+                                log_sys(f"[W{worker_id}] Status: {json_data.get('status', 'unknown')}", "warn", target=email, proxy=proxy)
+                        else:
+                            log_sys(f"[W{worker_id}] No 'json' field in data", "warn", target=email, proxy=proxy)
                     else:
-                        log_sys(f"[W{worker_id}] Registration failed - no UID", "warn", target=email, proxy=proxy)
+                        log_sys(f"[W{worker_id}] Unexpected response structure", "warn", target=email, proxy=proxy)
                 else:
-                    log_sys(f"[W{worker_id}] Unexpected response format", "warn", target=email, proxy=proxy)
-            except json.JSONDecodeError:
-                log_sys(f"[W{worker_id}] Invalid JSON response", "warn", target=email, proxy=proxy)
+                    log_sys(f"[W{worker_id}] Response is not a list or empty", "warn", target=email, proxy=proxy)
+                    
+            except json.JSONDecodeError as e:
+                log_sys(f"[W{worker_id}] Invalid JSON response: {str(e)[:50]}", "error", target=email, proxy=proxy)
         else:
             log_sys(f"[W{worker_id}] HTTP {response.status_code}", "error", target=email, proxy=proxy)
             # If we get 400/403, proxy might be burned
-            if response.status_code in [400, 403, 429]:
+            if response.status_code in [400, 403, 429, 500, 502, 503]:
                 with PROXY_LOCK:
                     STATE["proxies_dead"] += 1
                 return False, f"HTTP {response.status_code}"
     
     except requests.exceptions.Timeout:
         log_sys(f"[W{worker_id}] Timeout", "error", target=email, proxy=proxy)
+        # Return proxy for potential reuse on timeout
+        return_proxy(proxy)
+        return False, "Timeout"
     except requests.exceptions.ConnectionError:
         log_sys(f"[W{worker_id}] Connection error", "error", target=email, proxy=proxy)
+        return False, "Connection error"
     except Exception as e:
         log_sys(f"[W{worker_id}] Error: {str(e)[:50]}", "error", target=email, proxy=proxy)
+        return False, str(e)
     
     with ACCOUNT_LOCK:
         STATE["failed"] += 1
     
-    # Return proxy to queue for potential reuse
-    return_proxy(proxy)
     return False, "Registration failed"
 
 def account_creator_thread(worker_id):
@@ -464,13 +515,15 @@ HTML_TEMPLATE = """
         .level-info { color: #66ccff; }
         .log-time { color: #888; }
         .badge-gmail { background: #ea4335; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; }
+        .badge-success { background: #34a853; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>⚡ ARENA Account Creator
-            <span class="badge-gmail">HIGH SPEED</span>
-            <span style="float:right;font-size:0.5em;color:#888;">v1.0</span>
+            <span class="badge-gmail">AUTO-REG</span>
+            <span class="badge-success">PROXY</span>
+            <span style="float:right;font-size:0.5em;color:#888;">v2.0</span>
         </h1>
         
         <div class="row mt-3">
@@ -496,13 +549,13 @@ HTML_TEMPLATE = """
             </div>
             <div class="col-md-3">
                 <div class="stat-box">
-                    <div class="stat-label">Successful</div>
+                    <div class="stat-label">✅ Successful</div>
                     <div class="stat-value success">{{ stats.successful }}</div>
                 </div>
             </div>
             <div class="col-md-3">
                 <div class="stat-box">
-                    <div class="stat-label">Failed</div>
+                    <div class="stat-label">❌ Failed</div>
                     <div class="stat-value failed">{{ stats.failed }}</div>
                 </div>
             </div>
@@ -539,7 +592,7 @@ HTML_TEMPLATE = """
         
         <div class="row mt-4">
             <div class="col-md-6">
-                <h4>Recent Accounts</h4>
+                <h4>📋 Recent Accounts ({{ stats.recent_accounts|length }})</h4>
                 <div class="account-list">
                     <table class="table table-dark table-sm">
                         <thead>
@@ -547,6 +600,7 @@ HTML_TEMPLATE = """
                                 <th>Time</th>
                                 <th>Username</th>
                                 <th>Email</th>
+                                <th>ID</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -555,6 +609,7 @@ HTML_TEMPLATE = """
                                 <td>{{ acc.time }}</td>
                                 <td>{{ acc.username }}</td>
                                 <td style="color:#66ccff;">{{ acc.email }}</td>
+                                <td>{{ acc.user_id }}</td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -562,7 +617,7 @@ HTML_TEMPLATE = """
                 </div>
             </div>
             <div class="col-md-6">
-                <h4>Live Logs</h4>
+                <h4>📡 Live Logs</h4>
                 <div class="log-container">
                     {% for log in stats.logs[:50] %}
                     <div class="level-{{ log.level }}">
@@ -580,6 +635,7 @@ HTML_TEMPLATE = """
         <div class="row mt-4">
             <div class="col-md-6">
                 <a href="/download" class="btn btn-success btn-sm">⬇ Download Accounts ({{ stats.accounts_created }})</a>
+                <a href="/stats" class="btn btn-info btn-sm">📊 JSON Stats</a>
             </div>
             <div class="col-md-6 text-end">
                 <span style="color:#555;font-size:0.8em;">Started: {{ stats.start_time_str }}</span>
@@ -603,8 +659,8 @@ HTML_TEMPLATE = """
             }
         }
         
-        // Auto refresh every 5 seconds
-        setTimeout(() => location.reload(), 5000);
+        // Auto refresh every 3 seconds
+        setInterval(() => location.reload(), 3000);
     </script>
 </body>
 </html>
@@ -656,9 +712,9 @@ def download_accounts():
         if not ACCOUNTS:
             return "No accounts found", 404
         
-        csv_data = "Email,Password,Phone,Username,FirstName,LastName,UID,CreatedAt,Proxy\n"
+        csv_data = "Email,Password,Phone,Username,FirstName,LastName,UserID,CreatedAt,Proxy\n"
         for acc in ACCOUNTS:
-            csv_data += f"{acc['email']},{acc['password']},{acc['phone']},{acc['username']},{acc['first_name']},{acc['last_name']},{acc.get('uid','')},{acc['created_at']},{acc.get('proxy','')}\n"
+            csv_data += f"{acc['email']},{acc['password']},{acc['phone']},{acc['username']},{acc['first_name']},{acc['last_name']},{acc.get('user_id','')},{acc['created_at']},{acc.get('proxy','')}\n"
     
     return csv_data, 200, {
         'Content-Type': 'text/csv',
