@@ -116,7 +116,7 @@ def generate_phone():
 
 def generate_email():
     """Generate random email"""
-    return f"{generate_username()}@{random.choice(['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com'])}"
+    return f"{generate_username()}@{random.choice(['gmail.com'])}"
 
 def generate_password():
     """Generate strong password"""
