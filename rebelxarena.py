@@ -1,8 +1,9 @@
-# rebelxarena.py
+# arena.py
 #!/usr/bin/env python3
 """
-ARENA Unlimited Account Creator - HIGH SPEED WITH PROPER SAVING
-Fire-and-forget with background response processing
+ARENA Unlimited Account Creator - ASYNC BATCH PROCESSING
+Fires requests without waiting for responses
+Deployed on Render with Flask Web Interface
 """
 
 import os
@@ -15,7 +16,7 @@ import string
 import asyncio
 import aiohttp
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, jsonify, render_template_string, Response
 from collections import deque
 
@@ -26,7 +27,8 @@ BATCH_SIZE = 100  # Accounts per batch
 MAX_CONCURRENT = 50  # Maximum concurrent requests
 PROXY_BATCH_SIZE = 200
 MIN_PROXY_QUEUE = 20
-BATCH_DELAY = 0.05  # Minimal delay between batches
+REGISTRATION_TIMEOUT = 5  # Shorter timeout since we don't wait
+BATCH_DELAY = 0.1  # Minimal delay between batches
 
 # ============= GLOBAL STATE =============
 STATE = {
@@ -48,16 +50,15 @@ STATE = {
 # Queues and Locks
 PROXIES_LIVE_QUEUE = []
 ACCOUNTS = []
-PENDING_ACCOUNTS = []  # Accounts waiting to be verified
 ACCOUNT_LOCK = threading.Lock()
 PROXY_LOCK = threading.Lock()
 LOG_LOCK = threading.Lock()
 RATE_LOCK = threading.Lock()
 STOP_CREATION = threading.Event()
 BATCH_COUNTER = 0
+SUCCESS_COUNTER = 0
+FAIL_COUNTER = 0
 TOTAL_ATTEMPTS = 0
-SUCCESS_COUNT = 0
-FAIL_COUNT = 0
 
 # Request tracking for rate limiting
 REQUEST_TIMES = deque(maxlen=1000)
@@ -119,7 +120,7 @@ def generate_phone():
     return random.choice(['6','7','8','9']) + ''.join(random.choices(string.digits, k=9))
 
 def generate_email():
-    providers = ['gmail.com', 'gmail.com', 'gmail.com']
+    providers = ['gmail.com', 'gmail.com', 'gmail.com', 'yahoo.com', 'outlook.com']
     return f"{generate_username()}@{random.choice(providers)}"
 
 def generate_password():
@@ -207,13 +208,12 @@ def generate_user_data():
         "username": generate_username(),
         "phone": generate_phone(),
         "email": generate_email(),
-        "password": generate_password(),
-        "created_at": datetime.now().isoformat()
+        "password": generate_password()
     }
 
-async def fire_and_forget(session, user_data, proxy, worker_id):
-    """Fire a registration request - don't wait for full response"""
-    global TOTAL_ATTEMPTS, SUCCESS_COUNT, FAIL_COUNT
+async def fire_registration_request(session, user_data, proxy, worker_id):
+    """Fire a registration request without waiting for full response"""
+    global SUCCESS_COUNTER, FAIL_COUNTER, TOTAL_ATTEMPTS
     
     proxy_url = f"http://{proxy}" if proxy else None
     
@@ -251,23 +251,23 @@ async def fire_and_forget(session, user_data, proxy, worker_id):
     TOTAL_ATTEMPTS += 1
     
     try:
-        # VERY SHORT TIMEOUT - just enough to send the request
+        # Fire the request with minimal timeout - we don't care about response
         async with session.post(
             url, 
             headers=headers, 
             json=payload,
             proxy=proxy_url,
-            timeout=aiohttp.ClientTimeout(total=2, connect=1)
+            timeout=aiohttp.ClientTimeout(total=2, connect=1)  # Very short timeout
         ) as response:
-            # Read status only, don't wait for full body
+            # Read only the status code, don't wait for full response
             status = response.status
             
+            # Update counters based on status
             if status == 200:
-                # Try to read the response quickly
+                SUCCESS_COUNTER += 1
+                # Try to get user_id from response if available
                 try:
                     result = await response.json()
-                    
-                    # Check if we got a valid response
                     if isinstance(result, list) and len(result) > 0:
                         first_result = result[0]
                         if "result" in first_result and "data" in first_result["result"]:
@@ -280,7 +280,6 @@ async def fire_and_forget(session, user_data, proxy, worker_id):
                                     user_id = user_data_result.get("userId") or user_result.get("userId")
                                     
                                     if user_id:
-                                        # Save the account
                                         account_data = {
                                             "email": user_data["email"],
                                             "password": user_data["password"],
@@ -289,58 +288,33 @@ async def fire_and_forget(session, user_data, proxy, worker_id):
                                             "first_name": user_data["first_name"],
                                             "last_name": user_data["last_name"],
                                             "user_id": user_id,
-                                            "created_at": user_data["created_at"],
+                                            "created_at": datetime.now().isoformat(),
                                             "proxy": proxy
                                         }
                                         
                                         with ACCOUNT_LOCK:
                                             ACCOUNTS.append(account_data)
-                                            STATE["successful"] += 1
                                             STATE["recent_accounts"].appendleft({
                                                 "email": user_data["email"],
                                                 "username": user_data["username"],
                                                 "user_id": user_id,
                                                 "time": datetime.now().strftime("%H:%M:%S")
                                             })
-                                        
-                                        SUCCESS_COUNT += 1
-                                        return
                 except:
-                    # If we can't parse, still count as success (status 200)
-                    SUCCESS_COUNT += 1
-                    # Store the account without user_id (will try to get it later)
-                    account_data = {
-                        "email": user_data["email"],
-                        "password": user_data["password"],
-                        "phone": user_data["phone"],
-                        "username": user_data["username"],
-                        "first_name": user_data["first_name"],
-                        "last_name": user_data["last_name"],
-                        "user_id": "pending",
-                        "created_at": user_data["created_at"],
-                        "proxy": proxy
-                    }
-                    with ACCOUNT_LOCK:
-                        ACCOUNTS.append(account_data)
-                        STATE["successful"] += 1
-                        STATE["recent_accounts"].appendleft({
-                            "email": user_data["email"],
-                            "username": user_data["username"],
-                            "user_id": "pending",
-                            "time": datetime.now().strftime("%H:%M:%S")
-                        })
+                    # Even if we can't parse JSON, status 200 is still success
+                    pass
             else:
-                FAIL_COUNT += 1
+                FAIL_COUNTER += 1
                 
     except asyncio.TimeoutError:
-        # Timeout is fine - request was sent, consider it success
-        SUCCESS_COUNT += 1
+        # Timeout is fine - request was sent
+        SUCCESS_COUNTER += 1  # Assume success if request was sent
     except Exception:
-        FAIL_COUNT += 1
+        FAIL_COUNTER += 1
 
 async def fire_batch_requests(batch_id):
     """Fire a batch of registration requests asynchronously"""
-    global TOTAL_ATTEMPTS, SUCCESS_COUNT, FAIL_COUNT
+    global SUCCESS_COUNTER, FAIL_COUNTER, TOTAL_ATTEMPTS
     
     batch_size = BATCH_SIZE
     
@@ -350,7 +324,7 @@ async def fire_batch_requests(batch_id):
     # Get proxies for the batch
     proxies = get_proxy_batch(batch_size)
     
-    # Fill missing proxies with None
+    # Fill missing proxies with None (will use direct connection)
     while len(proxies) < batch_size:
         proxies.append(None)
     
@@ -362,11 +336,11 @@ async def fire_batch_requests(batch_id):
         tasks = []
         for i, (user_data, proxy) in enumerate(zip(batch_users, proxies)):
             task = asyncio.create_task(
-                fire_and_forget(session, user_data, proxy, i+1)
+                fire_registration_request(session, user_data, proxy, i+1)
             )
             tasks.append(task)
         
-        # Wait for all tasks to complete or timeout
+        # Wait for all tasks to complete (or timeout)
         try:
             await asyncio.wait(tasks, timeout=3)
         except:
@@ -375,8 +349,8 @@ async def fire_batch_requests(batch_id):
     # Update stats
     with ACCOUNT_LOCK:
         STATE["total_attempts"] = TOTAL_ATTEMPTS
-        STATE["successful"] = SUCCESS_COUNT
-        STATE["failed"] = FAIL_COUNT
+        STATE["successful"] = SUCCESS_COUNTER
+        STATE["failed"] = FAIL_COUNTER
     
     # Update rate
     with RATE_LOCK:
@@ -387,7 +361,7 @@ async def fire_batch_requests(batch_id):
             if newest - oldest > 0:
                 STATE["rate"] = len(REQUEST_TIMES) / (newest - oldest) * 60
     
-    log_sys(f"[BATCH {batch_id}] Fired {batch_size} requests, Saved {len(ACCOUNTS)} accounts", "info")
+    log_sys(f"[BATCH {batch_id}] Fired {batch_size} requests", "info")
 
 def run_async_batch(batch_id):
     """Run a single async batch"""
@@ -400,7 +374,7 @@ def continuous_creation():
     """Continuous batch creation in a loop"""
     global BATCH_COUNTER
     
-    log_sys("SYSTEM: Starting HIGH SPEED ASYNC batch creation", "info")
+    log_sys("SYSTEM: Starting ASYNC batch creation mode", "info")
     
     while not STOP_CREATION.is_set():
         BATCH_COUNTER += 1
@@ -419,15 +393,15 @@ def continuous_creation():
 
 def start_creation():
     """Start the account creation process"""
-    global BG_THREADS_STARTED, TOTAL_ATTEMPTS, SUCCESS_COUNT, FAIL_COUNT
+    global BG_THREADS_STARTED, SUCCESS_COUNTER, FAIL_COUNTER, TOTAL_ATTEMPTS
     
     if STATE["status"] == "running":
         return
     
     # Reset counters
+    SUCCESS_COUNTER = 0
+    FAIL_COUNTER = 0
     TOTAL_ATTEMPTS = 0
-    SUCCESS_COUNT = 0
-    FAIL_COUNT = 0
     
     STOP_CREATION.clear()
     STATE["status"] = "running"
@@ -441,7 +415,7 @@ def start_creation():
     threading.Thread(target=continuous_creation, daemon=True).start()
     
     STATE["active_threads"] = MAX_CONCURRENT
-    log_sys(f"SYSTEM: Started HIGH SPEED batch creator with {MAX_CONCURRENT} concurrent", "success")
+    log_sys(f"SYSTEM: Started ASYNC batch creator with {MAX_CONCURRENT} concurrent requests", "success")
 
 def stop_creation():
     """Stop the account creation process"""
@@ -456,7 +430,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ARENA Account Creator - HIGH SPEED</title>
+    <title>ARENA Account Creator - ASYNC MODE</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body {
@@ -543,7 +517,7 @@ HTML_TEMPLATE = """
         .level-warn { color: #ffaa00; }
         .level-info { color: #66ccff; }
         .log-time { color: #888; }
-        .badge-highspeed { background: #ff0066; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; animation: blink 0.5s infinite; }
+        .badge-async { background: #ff0066; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; animation: blink 0.5s infinite; }
         .badge-fire { background: #ff6b35; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; }
     </style>
 </head>
@@ -551,8 +525,8 @@ HTML_TEMPLATE = """
     <div class="container">
         <h1>⚡ ARENA Account Creator
             <span class="badge-fire">FIRE & FORGET</span>
-            <span class="badge-highspeed">HIGH SPEED</span>
-            <span style="float:right;font-size:0.5em;color:#888;">v5.0</span>
+            <span class="badge-async">ASYNC</span>
+            <span style="float:right;font-size:0.5em;color:#888;">v4.0</span>
         </h1>
         
         <div class="row mt-3">
@@ -577,23 +551,21 @@ HTML_TEMPLATE = """
                 </div>
             </div>
             <div class="col-md-3">
+                <div class="stat-box">
+                    <div class="stat-label">✅ Successful</div>
+                    <div class="stat-value success">{{ stats.successful }}</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-box">
+                    <div class="stat-label">❌ Failed</div>
+                    <div class="stat-value failed">{{ stats.failed }}</div>
+                </div>
+            </div>
+            <div class="col-md-3">
                 <div class="stat-box" style="border-color: #ff0066;">
                     <div class="stat-label">🚀 Rate (req/min)</div>
                     <div class="stat-value" style="color: #ff0066;">{{ "%.0f"|format(stats.rate) }}</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="stat-box">
-                    <div class="stat-label">✅ Accounts Saved</div>
-                    <div class="stat-value success">{{ stats.accounts_created }}</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="stat-box">
-                    <div class="stat-label">Status</div>
-                    <div class="stat-value {{ 'status-running' if stats.status == 'running' else 'status-idle' }}">
-                        {{ stats.status.upper() }}
-                    </div>
                 </div>
             </div>
         </div>
@@ -613,8 +585,10 @@ HTML_TEMPLATE = """
             </div>
             <div class="col-md-4">
                 <div class="stat-box">
-                    <div class="stat-label">Failed</div>
-                    <div class="stat-value failed">{{ stats.failed }}</div>
+                    <div class="stat-label">Status</div>
+                    <div class="stat-value {{ 'status-running' if stats.status == 'running' else 'status-idle' }}">
+                        {{ stats.status.upper() }}
+                    </div>
                 </div>
             </div>
         </div>
@@ -652,6 +626,9 @@ HTML_TEMPLATE = """
                     <div class="level-{{ log.level }}">
                         <span class="log-time">[{{ log.time }}]</span>
                         <span>{{ log.message }}</span>
+                        {% if log.target and log.target != 'N/A' %}
+                        <span style="color:#888;">→ {{ log.target }}</span>
+                        {% endif %}
                     </div>
                     {% endfor %}
                 </div>
@@ -685,7 +662,7 @@ HTML_TEMPLATE = """
             }
         }
         
-        // Auto refresh every 2 seconds
+        // Auto refresh every 2 seconds for real-time updates
         setInterval(() => location.reload(), 2000);
     </script>
 </body>
