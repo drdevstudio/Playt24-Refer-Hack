@@ -1,4 +1,4 @@
-# arena.py
+# rebelxarena.py
 #!/usr/bin/env python3
 """
 ARENA Unlimited Account Creator - ASYNC BATCH PROCESSING
@@ -117,7 +117,7 @@ def generate_phone():
     return random.choice(['6','7','8','9']) + ''.join(random.choices(string.digits, k=9))
 
 def generate_email():
-    providers = ['gmail.com', 'gmail.com', 'gmail.com', 'yahoo.com', 'outlook.com']
+    providers = ['gmail.com', 'gmail.com', 'gmail.com']
     return f"{generate_username()}@{random.choice(providers)}"
 
 def generate_password():
