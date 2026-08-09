@@ -1,8 +1,9 @@
+# arena.py
 #!/usr/bin/env python3
 """
-ARENA - Rebel X Arena Mass Account Creator
-Combines proxy rotation with high-speed account registration
-Target: Register hundreds of accounts per second
+ARENA Unlimited Account Creator - High Speed with Proxy Rotation
+Combined Proxy Logic + Account Creation
+Deployed on Render with Flask Web Interface
 """
 
 import os
@@ -14,103 +15,118 @@ import requests
 import string
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from collections import deque
 from flask import Flask, jsonify, render_template_string, Response
+from collections import deque
 
 app = Flask(__name__)
 
-# ============ CONFIGURATION ============
-TARGET_URL = "https://s2-api.digicroz.com/trpc/rebelXArena/webApp/rebelXArena/auth.register?batch=1"
-MAX_WORKERS = 200  # Concurrent threads for registration
-PROXY_BATCH_SIZE = 500
-PROXY_QUEUE_MIN = 50
-REGISTER_RATE_LIMIT = 0.05  # Minimum seconds between requests per worker
+# ============= CONFIGURATION =============
+BASE_URL = "https://s2-api.digicroz.com"
+MAX_WORKERS = 50  # Number of concurrent registration threads
+PROXY_BATCH_SIZE = 200  # Proxies to fetch at a time
+MIN_PROXY_QUEUE = 30  # Minimum proxies before refill
+REGISTRATION_TIMEOUT = 10
 
-# ============ GLOBAL STATE ============
+# ============= GLOBAL STATE =============
 STATE = {
     "start_time": time.time(),
     "start_time_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
     "total_attempts": 0,
     "successful": 0,
     "failed": 0,
-    "rate_per_second": 0,
+    "active_threads": 0,
+    "rate": 0,
+    "status": "idle",
     "proxies_fetched": 0,
     "proxies_dead": 0,
     "proxies_live": 0,
-    "accounts_created": 0,
+    "recent_accounts": deque(maxlen=50),
     "logs": []
 }
 
+# Queues and Locks
 PROXIES_LIVE_QUEUE = []
+ACCOUNTS = []
+ACCOUNT_LOCK = threading.Lock()
 PROXY_LOCK = threading.Lock()
-STATS_LOCK = threading.Lock()
 LOG_LOCK = threading.Lock()
-STOP_FLAG = threading.Event()
-
-# Rate tracking
-request_times = deque(maxlen=100)
 RATE_LOCK = threading.Lock()
+STOP_CREATION = threading.Event()
 
-# ============ NAME GENERATORS ============
+# Request tracking for rate limiting
+REQUEST_TIMES = deque(maxlen=100)
+
+# ============= LOGGING SYSTEM =============
+def log_sys(msg, level="info", target="N/A", proxy="N/A"):
+    """Thread-safe logging system"""
+    with LOG_LOCK:
+        entry = {
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "message": msg,
+            "level": level,
+            "target": target,
+            "proxy": proxy
+        }
+        STATE["logs"].insert(0, entry)
+        if len(STATE["logs"]) > 2000:
+            STATE["logs"] = STATE["logs"][:2000]
+
+# ============= NAME GENERATORS =============
 FIRST_NAMES = [
     "Raj", "Amit", "Priya", "Suresh", "Neha", "Vikram", "Anjali", "Rahul", "Pooja", "Arun",
     "Kiran", "Meena", "Sunil", "Deepa", "Manoj", "Sita", "Ravi", "Geeta", "Naveen", "Kavya",
     "Aisha", "Kabir", "Zara", "Arjun", "Mira", "Karan", "Riya", "Dev", "Sara", "Aditya",
     "James", "Mary", "John", "Patricia", "Robert", "Jennifer", "Michael", "Linda", "William", "Elizabeth",
     "David", "Barbara", "Richard", "Susan", "Joseph", "Jessica", "Thomas", "Sarah", "Charles", "Karen",
-    "Christopher", "Nancy", "Daniel", "Lisa", "Matthew", "Betty", "Anthony", "Helen", "Mark", "Sandra",
-    "Donald", "Donna", "Steven", "Carol", "Paul", "Ruth", "Andrew", "Sharon", "Joshua", "Michelle",
-    "Vishal", "Nisha", "Gaurav", "Swati", "Anand", "Kajal", "Pankaj", "Shreya", "Deepak", "Manisha",
-    "Sanjay", "Ritu", "Rajesh", "Sneha", "Rakesh", "Pallavi", "Mukesh", "Shilpa", "Bharat", "Jyoti",
-    "Ashok", "Komal", "Ramesh", "Mansi", "Mahesh", "Ruchika", "Sachin", "Madhu", "Dinesh", "Simran"
+    "Christopher", "Nancy", "Daniel", "Lisa", "Matthew", "Betty", "Anthony", "Helen", "Mark", "Sandra"
 ]
 
 LAST_NAMES = [
     "Sharma", "Verma", "Patel", "Kumar", "Singh", "Reddy", "Rao", "Joshi", "Gupta", "Mehta",
     "Choudhary", "Desai", "Nair", "Menon", "Iyer", "Pillai", "Acharya", "Bhatt", "Das", "Mishra",
-    "Agarwal", "Khanna", "Malhotra", "Saxena", "Tiwari", "Dubey", "Pandey", "Tripathi", "Yadav", "Jha",
     "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez",
-    "Hernandez", "Lopez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee",
-    "Perez", "Thompson", "White", "Harris", "Sanchez", "Clark", "Ramirez", "Lewis", "Robinson", "Walker",
-    "Young", "Allen", "King", "Wright", "Scott", "Torres", "Nguyen", "Hill", "Flores", "Green"
+    "Hernandez", "Lopez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee"
 ]
 
-# ============ EMAIL GENERATORS ============
+def generate_name():
+    """Generate random name"""
+    first = random.choice(FIRST_NAMES)
+    last = random.choice(LAST_NAMES)
+    if random.random() < 0.2:
+        first, last = last, first
+    return first, last
+
 def generate_username():
-    """Generate clean alphanumeric username"""
+    """Generate clean username"""
     patterns = [
         lambda: f"{random.choice(FIRST_NAMES).lower()}{random.randint(100, 9999)}",
         lambda: f"{random.choice(FIRST_NAMES).lower()}{random.choice(LAST_NAMES).lower()}{random.randint(10, 999)}",
         lambda: f"{''.join(random.choices(string.ascii_lowercase, k=random.randint(5, 8)))}{random.randint(100, 9999)}",
-        lambda: f"{random.choice(FIRST_NAMES).lower()}{''.join(random.choices(string.ascii_lowercase, k=random.randint(3, 5)))}",
-        lambda: f"{random.randint(10, 999)}{random.choice(FIRST_NAMES).lower()}",
-        lambda: f"{random.choice(['gamer','player','winner','champion','master','pro','elite','legend','hero','star'])}{random.randint(100, 9999)}",
-        lambda: f"{random.choice(FIRST_NAMES)[0].lower()}{random.choice(LAST_NAMES).lower()}{random.randint(10, 999)}",
         lambda: f"user{random.randint(10000, 999999)}",
-        lambda: f"test{random.randint(10000, 999999)}",
         lambda: f"play{random.randint(10000, 999999)}",
+        lambda: f"game{random.randint(10000, 999999)}",
+        lambda: f"win{random.randint(10000, 999999)}",
+        lambda: f"{random.choice(['gamer', 'player', 'winner', 'champion', 'master', 'pro', 'elite', 'legend', 'hero'])}{random.randint(100, 9999)}",
     ]
     return random.choice(patterns)()
 
-def generate_email():
-    """Generate unique Gmail address"""
-    return f"{generate_username()}@gmail.com"
-
-# ============ PHONE GENERATOR ============
 def generate_phone():
-    """Generate valid Indian phone number"""
-    return f"{random.choice(['6','7','8','9'])}{''.join(random.choices(string.digits, k=9))}"
+    """Generate Indian phone number"""
+    return random.choice(['6','7','8','9']) + ''.join(random.choices(string.digits, k=9))
 
-# ============ PASSWORD GENERATOR ============
+def generate_email():
+    """Generate random email"""
+    return f"{generate_username()}@{random.choice(['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com'])}"
+
 def generate_password():
-    """Generate strong password with special chars"""
+    """Generate strong password"""
+    chars = string.ascii_letters + string.digits + "!@#$%^&*"
     length = random.randint(12, 18)
-    chars = string.ascii_letters + string.digits + "!@#$%^&*()_+-=<>?"
     return ''.join(random.choices(chars, k=length))
 
-# ============ PROXY MANAGEMENT (from main.py) ============
+# ============= PROXY MANAGEMENT =============
 def fetch_raw_proxies():
-    """Fetch proxies from multiple sources"""
+    """Fetches free proxies from multiple sources"""
     sources = [
         "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all",
         "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
@@ -119,88 +135,109 @@ def fetch_raw_proxies():
     ]
     
     raw_proxies = set()
-    log_sys("SYSTEM: Fetching proxies from global sources...", "info")
+    log_sys("SYSTEM: Fetching fresh proxies...", "info")
     
     for url in sources:
         try:
             resp = requests.get(url, timeout=10)
             if resp.status_code == 200:
-                for line in resp.text.strip().split('\n'):
+                lines = resp.text.strip().split('\n')
+                for line in lines:
                     proxy = line.strip()
                     if ":" in proxy:
                         raw_proxies.add(proxy)
         except Exception as e:
-            log_sys(f"SYSTEM: Failed to fetch from {url} - {str(e)}", "warn")
+            log_sys(f"SYSTEM: Failed to fetch from {url}", "warn")
     
     proxy_list = list(raw_proxies)
     random.shuffle(proxy_list)
-    return proxy_list[:PROXY_BATCH_SIZE]
+    return proxy_list[:500]
 
 def check_single_proxy(proxy):
-    """Validate proxy is alive"""
-    proxies = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
+    """Checks if a proxy is alive"""
+    proxy_dict = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
     try:
-        res = requests.get("http://connectivitycheck.gstatic.com/generate_204", proxies=proxies, timeout=5)
+        res = requests.get("http://connectivitycheck.gstatic.com/generate_204", proxies=proxy_dict, timeout=5)
         if res.status_code == 204:
             with PROXY_LOCK:
                 PROXIES_LIVE_QUEUE.append(proxy)
-            with STATS_LOCK:
                 STATE["proxies_live"] += 1
-            log_sys(f"VALIDATED: Proxy is ALIVE", "success", proxy=proxy)
             return True
-        else:
-            with STATS_LOCK:
-                STATE["proxies_dead"] += 1
-            return False
     except:
-        with STATS_LOCK:
-            STATE["proxies_dead"] += 1
-        return False
+        pass
+    with PROXY_LOCK:
+        STATE["proxies_dead"] += 1
+    return False
 
 def proxy_manager_thread():
     """Background thread to maintain proxy queue"""
-    while not STOP_FLAG.is_set():
+    while True:
         with PROXY_LOCK:
             queue_size = len(PROXIES_LIVE_QUEUE)
         
-        if queue_size < PROXY_QUEUE_MIN:
-            log_sys(f"SYSTEM: Proxy queue low ({queue_size}). Fetching new proxies...", "info")
+        if queue_size < MIN_PROXY_QUEUE:
+            log_sys(f"SYSTEM: Proxy queue low ({queue_size}). Refilling...", "info")
             new_proxies = fetch_raw_proxies()
-            
-            with STATS_LOCK:
+            with PROXY_LOCK:
                 STATE["proxies_fetched"] += len(new_proxies)
             
-            log_sys(f"SYSTEM: Downloaded {len(new_proxies)} proxies. Validating...", "info")
+            log_sys(f"SYSTEM: Testing {len(new_proxies)} proxies...", "info")
             
-            # Validate proxies in parallel
-            with ThreadPoolExecutor(max_workers=50) as executor:
-                futures = [executor.submit(check_single_proxy, proxy) for proxy in new_proxies]
-                for future in as_completed(futures):
-                    pass  # Results are already logged
+            with ThreadPoolExecutor(max_workers=30) as executor:
+                futures = [executor.submit(check_single_proxy, p) for p in new_proxies]
+                for f in as_completed(futures):
+                    pass
             
             with PROXY_LOCK:
-                log_sys(f"SYSTEM: Proxy queue now has {len(PROXIES_LIVE_QUEUE)} live proxies", "success")
+                log_sys(f"SYSTEM: Proxy queue now {len(PROXIES_LIVE_QUEUE)}", "success")
         
-        time.sleep(5)
+        time.sleep(3)
 
-# ============ ACCOUNT REGISTRATION (from playt24.py adapted) ============
-def register_single_account(worker_id):
-    """Register a single account using a proxy from the queue"""
-    # Get a proxy from the queue
+def get_proxy():
+    """Get a live proxy from the queue"""
     with PROXY_LOCK:
-        if not PROXIES_LIVE_QUEUE:
-            return False, "No proxies available"
-        proxy = PROXIES_LIVE_QUEUE.pop(0)
+        if PROXIES_LIVE_QUEUE:
+            proxy = PROXIES_LIVE_QUEUE.pop(0)
+            STATE["proxies_live"] = len(PROXIES_LIVE_QUEUE)
+            return proxy
+    return None
+
+def return_proxy(proxy):
+    """Return a proxy to the queue (reuse if still good)"""
+    if proxy:
+        with PROXY_LOCK:
+            PROXIES_LIVE_QUEUE.append(proxy)
+            STATE["proxies_live"] = len(PROXIES_LIVE_QUEUE)
+
+# ============= ACCOUNT CREATION =============
+def register_single_account(worker_id):
+    """Register a single account using a proxy"""
+    # Get a proxy
+    proxy = get_proxy()
+    if not proxy:
+        return False, "No proxy available"
     
-    # Generate account data
-    first_name = random.choice(FIRST_NAMES)
-    last_name = random.choice(LAST_NAMES)
+    proxy_dict = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
+    
+    # Generate user data
+    first_name, last_name = generate_name()
     username = generate_username()
     phone = generate_phone()
     email = generate_email()
     password = generate_password()
     
-    # Build request payload
+    # Build tRPC request
+    url = "https://s2-api.digicroz.com/trpc/rebelXArena/webApp/rebelXArena/auth.register?batch=1"
+    
+    headers = {
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9",
+        "content-type": "application/json",
+        "origin": "https://web-app.rebelxarena.com",
+        "referer": "https://web-app.rebelxarena.com/",
+        "user-agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.{worker_id} Safari/537.36"
+    }
+    
     payload = {
         "0": {
             "json": {
@@ -215,469 +252,469 @@ def register_single_account(worker_id):
         }
     }
     
-    # Headers with rotating user-agent
-    headers = {
-        "accept": "*/*",
-        "accept-language": "en-US,en;q=0.9",
-        "content-type": "application/json",
-        "origin": "https://web-app.rebelxarena.com",
-        "referer": "https://web-app.rebelxarena.com/",
-        "sec-ch-ua": "\"Not=A?Brand\";v=\"99\", \"Google Chrome\";v=\"151\", \"Chromium\";v=\"151\"",
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": "\"Linux\"",
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "cross-site",
-        "user-agent": random.choice([
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0"
-        ])
-    }
-    
-    # Proxy config
-    proxy_dict = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
-    
     try:
-        # Rate limiting
-        time.sleep(REGISTER_RATE_LIMIT)
+        response = requests.post(url, headers=headers, json=payload, proxies=proxy_dict, timeout=REGISTRATION_TIMEOUT)
         
-        response = requests.post(TARGET_URL, headers=headers, json=payload, proxies=proxy_dict, timeout=10)
+        with ACCOUNT_LOCK:
+            STATE["total_attempts"] += 1
         
-        # Track rate
-        with RATE_LOCK:
-            request_times.append(time.time())
-        
-        # Parse response
-        try:
-            result = response.json()
-            
-            # Check for success - look for uid or success indicators
-            if response.status_code == 200:
-                # tRPC response format
-                data = result.get("0", {})
-                json_data = data.get("json", {})
-                
-                # Check for successful registration
-                if "result" in json_data or json_data.get("success") is not False:
-                    with STATS_LOCK:
-                        STATE["successful"] += 1
-                        STATE["total_attempts"] += 1
-                        STATE["accounts_created"] += 1
-                    
-                    log_sys(f"[W{worker_id}] ✅ Account created: {username} ({email})", "success", proxy=proxy)
-                    return True, {"username": username, "email": email, "password": password, "phone": phone}
+        if response.status_code == 200:
+            try:
+                result = response.json()
+                # Check for success (tRPC response format)
+                if "0" in result and "json" in result["0"]:
+                    data = result["0"]["json"]
+                    if data and "uid" in data and data.get("uid"):
+                        account_data = {
+                            "email": email,
+                            "password": password,
+                            "phone": phone,
+                            "username": username,
+                            "first_name": first_name,
+                            "last_name": last_name,
+                            "uid": data.get("uid"),
+                            "created_at": datetime.now().isoformat(),
+                            "proxy": proxy
+                        }
+                        
+                        with ACCOUNT_LOCK:
+                            ACCOUNTS.append(account_data)
+                            STATE["successful"] += 1
+                            STATE["recent_accounts"].appendleft({
+                                "email": email,
+                                "username": username,
+                                "uid": data.get("uid"),
+                                "time": datetime.now().strftime("%H:%M:%S")
+                            })
+                        
+                        log_sys(f"[W{worker_id}] Account created: {username}", "success", target=email, proxy=proxy)
+                        return True, account_data
+                    else:
+                        log_sys(f"[W{worker_id}] Registration failed - no UID", "warn", target=email, proxy=proxy)
                 else:
-                    # Check for specific errors
-                    error_msg = str(result)
-                    with STATS_LOCK:
-                        STATE["failed"] += 1
-                        STATE["total_attempts"] += 1
-                    
-                    log_sys(f"[W{worker_id}] ❌ Registration failed: {error_msg[:100]}", "error", proxy=proxy)
-                    return False, error_msg
-            else:
-                with STATS_LOCK:
-                    STATE["failed"] += 1
-                    STATE["total_attempts"] += 1
-                
-                log_sys(f"[W{worker_id}] ❌ HTTP {response.status_code}: {response.text[:100]}", "error", proxy=proxy)
+                    log_sys(f"[W{worker_id}] Unexpected response format", "warn", target=email, proxy=proxy)
+            except json.JSONDecodeError:
+                log_sys(f"[W{worker_id}] Invalid JSON response", "warn", target=email, proxy=proxy)
+        else:
+            log_sys(f"[W{worker_id}] HTTP {response.status_code}", "error", target=email, proxy=proxy)
+            # If we get 400/403, proxy might be burned
+            if response.status_code in [400, 403, 429]:
+                with PROXY_LOCK:
+                    STATE["proxies_dead"] += 1
                 return False, f"HTTP {response.status_code}"
-                
-        except json.JSONDecodeError:
-            with STATS_LOCK:
-                STATE["failed"] += 1
-                STATE["total_attempts"] += 1
-            log_sys(f"[W{worker_id}] ❌ Invalid JSON response: {response.text[:100]}", "error", proxy=proxy)
-            return False, "Invalid JSON"
-            
-    except requests.exceptions.Timeout:
-        with STATS_LOCK:
-            STATE["failed"] += 1
-            STATE["total_attempts"] += 1
-        log_sys(f"[W{worker_id}] ⏱️ Request timeout", "warn", proxy=proxy)
-        return False, "Timeout"
-        
-    except requests.exceptions.ProxyError:
-        with STATS_LOCK:
-            STATE["failed"] += 1
-            STATE["total_attempts"] += 1
-        log_sys(f"[W{worker_id}] 🚫 Proxy error - marking as dead", "error", proxy=proxy)
-        return False, "Proxy error"
-        
-    except Exception as e:
-        with STATS_LOCK:
-            STATE["failed"] += 1
-            STATE["total_attempts"] += 1
-        log_sys(f"[W{worker_id}] ❌ Error: {str(e)}", "error", proxy=proxy)
-        return False, str(e)
-
-def worker_thread(worker_id):
-    """Worker thread that continuously registers accounts"""
-    log_sys(f"SYSTEM: Worker {worker_id} started", "info")
     
-    while not STOP_FLAG.is_set():
+    except requests.exceptions.Timeout:
+        log_sys(f"[W{worker_id}] Timeout", "error", target=email, proxy=proxy)
+    except requests.exceptions.ConnectionError:
+        log_sys(f"[W{worker_id}] Connection error", "error", target=email, proxy=proxy)
+    except Exception as e:
+        log_sys(f"[W{worker_id}] Error: {str(e)[:50]}", "error", target=email, proxy=proxy)
+    
+    with ACCOUNT_LOCK:
+        STATE["failed"] += 1
+    
+    # Return proxy to queue for potential reuse
+    return_proxy(proxy)
+    return False, "Registration failed"
+
+def account_creator_thread(worker_id):
+    """Worker thread that continuously creates accounts"""
+    log_sys(f"[W{worker_id}] Worker started", "info")
+    
+    while not STOP_CREATION.is_set():
         try:
             success, result = register_single_account(worker_id)
             
-            # If proxy is dead or no proxies, wait a moment
-            if not success and "no proxies" in str(result).lower():
-                time.sleep(1)
-                
+            # Update rate
+            with RATE_LOCK:
+                REQUEST_TIMES.append(time.time())
+                if len(REQUEST_TIMES) > 1:
+                    oldest = REQUEST_TIMES[0]
+                    newest = REQUEST_TIMES[-1]
+                    if newest - oldest > 0:
+                        STATE["rate"] = len(REQUEST_TIMES) / (newest - oldest) * 60
+            
+            # Small delay to avoid overwhelming
+            time.sleep(random.uniform(0.1, 0.3))
+            
         except Exception as e:
             log_sys(f"[W{worker_id}] Worker error: {str(e)}", "error")
             time.sleep(1)
 
-# ============ LOGGING ============
-def log_sys(msg, level="info", target="N/A", proxy="N/A"):
-    """Thread-safe logging"""
-    with LOG_LOCK:
-        entry = {
-            "time": datetime.now().strftime("%H:%M:%S"),
-            "message": msg,
-            "level": level,
-            "target": target,
-            "proxy": proxy
-        }
-        STATE["logs"].insert(0, entry)
-        if len(STATE["logs"]) > 2000:
-            STATE["logs"] = STATE["logs"][:2000]
-
-# ============ FLASK WEB INTERFACE ============
-def init_background_threads():
-    """Initialize all background threads"""
-    log_sys("SYSTEM: Initializing background threads...", "info")
+def start_creation():
+    """Start the account creation process"""
+    global BG_THREADS_STARTED
+    
+    if STATE["status"] == "running":
+        return
+    
+    STOP_CREATION.clear()
+    STATE["status"] = "running"
+    STATE["start_time"] = time.time()
+    STATE["start_time_str"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
     
     # Start proxy manager
     threading.Thread(target=proxy_manager_thread, daemon=True).start()
     
-    # Start workers
+    # Start worker threads
     for i in range(MAX_WORKERS):
-        threading.Thread(target=worker_thread, args=(i+1,), daemon=True).start()
+        threading.Thread(target=account_creator_thread, args=(i+1,), daemon=True).start()
     
-    log_sys(f"SYSTEM: Started {MAX_WORKERS} worker threads", "success")
+    log_sys(f"SYSTEM: Started {MAX_WORKERS} workers", "success")
+    STATE["active_threads"] = MAX_WORKERS
 
-@app.before_request
-def activate_threads():
-    """Ensure threads start with Flask"""
-    if not hasattr(app, '_threads_started'):
-        init_background_threads()
-        app._threads_started = True
-
-@app.route('/')
-def index():
-    """Main dashboard"""
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route('/api/stats')
-def stats():
-    """Get current statistics"""
-    with STATS_LOCK:
-        stats_data = {
-            "uptime": f"{int(time.time() - STATE['start_time'])}s",
-            "started_at": STATE["start_time_str"],
-            "total_attempts": STATE["total_attempts"],
-            "successful": STATE["successful"],
-            "failed": STATE["failed"],
-            "rate_per_second": calculate_rate(),
-            "proxies_fetched": STATE["proxies_fetched"],
-            "proxies_dead": STATE["proxies_dead"],
-            "proxies_live_queue": len(PROXIES_LIVE_QUEUE),
-            "accounts_created": STATE["accounts_created"],
-            "logs": STATE["logs"][:100]
-        }
-    return jsonify(stats_data)
-
-def calculate_rate():
-    """Calculate registration rate per second"""
-    with RATE_LOCK:
-        if len(request_times) < 2:
-            return 0
-        oldest = request_times[0]
-        newest = request_times[-1]
-        if newest - oldest > 0:
-            return len(request_times) / (newest - oldest)
-    return 0
-
-@app.route('/api/start', methods=['POST'])
-def start_creation():
-    """Start account creation"""
-    STOP_FLAG.clear()
-    return jsonify({"status": "started"})
-
-@app.route('/api/stop', methods=['POST'])
 def stop_creation():
-    """Stop account creation"""
-    STOP_FLAG.set()
-    return jsonify({"status": "stopped"})
+    """Stop the account creation process"""
+    STOP_CREATION.set()
+    STATE["status"] = "idle"
+    log_sys("SYSTEM: Stopped all workers", "info")
 
-@app.route('/api/reset', methods=['POST'])
-def reset_stats():
-    """Reset all statistics"""
-    with STATS_LOCK:
-        STATE["total_attempts"] = 0
-        STATE["successful"] = 0
-        STATE["failed"] = 0
-        STATE["accounts_created"] = 0
-    return jsonify({"status": "reset"})
-
-# ============ HTML TEMPLATE ============
+# ============= FLASK WEB INTERFACE =============
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ARENA - Rebel X Arena Account Creator</title>
+    <title>ARENA Account Creator</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             background: #0a0a0a;
             color: #00ff00;
-            font-family: 'Courier New', Courier, monospace;
+            font-family: 'Courier New', monospace;
+            margin: 0;
             padding: 20px;
-            min-height: 100vh;
         }
-        .container { max-width: 1400px; margin: 0 auto; }
-        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: #111;
+            border: 1px solid #00ff00;
+            border-radius: 10px;
+            padding: 20px;
+        }
         h1 {
-            text-align: center;
-            color: #ff6b35;
-            text-shadow: 0 0 30px rgba(255,107,53,0.3);
-            border-bottom: 2px solid #ff6b35;
-            padding-bottom: 15px;
-            margin-bottom: 20px;
-            font-size: 2.5em;
-            letter-spacing: 4px;
-        }
-        .subtitle {
-            text-align: center;
-            color: #888;
-            margin-bottom: 20px;
-            font-size: 0.9em;
-        }
-        
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 10px;
-            margin-bottom: 20px;
+            border-bottom: 1px solid #00ff00;
+            padding-bottom: 10px;
+            text-shadow: 0 0 10px #00ff00;
         }
         .stat-box {
-            background: rgba(0,255,0,0.03);
-            border: 1px solid #00ff00;
+            background: #1a1a1a;
             padding: 15px;
-            text-align: center;
+            margin: 10px 0;
+            border-radius: 5px;
+            border-left: 3px solid #00ff00;
         }
-        .stat-box .label { font-size: 0.7em; color: #888; text-transform: uppercase; letter-spacing: 1px; }
-        .stat-box .value { font-size: 1.8em; font-weight: bold; margin-top: 5px; }
-        .stat-box .value.green { color: #00ff00; }
-        .stat-box .value.red { color: #ff3333; }
-        .stat-box .value.orange { color: #ff6b35; }
-        .stat-box .value.cyan { color: #00ddff; }
-        .stat-box .value.purple { color: #aa66ff; }
-        
-        .controls {
-            display: flex;
-            gap: 10px;
-            margin: 20px 0;
-            flex-wrap: wrap;
-        }
-        .btn {
-            padding: 12px 30px;
-            border: none;
-            font-family: 'Courier New', monospace;
+        .stat-value {
+            font-size: 2em;
             font-weight: bold;
-            font-size: 1em;
-            cursor: pointer;
-            transition: all 0.3s;
+            color: #00ff00;
+        }
+        .stat-label {
+            color: #888;
+            font-size: 0.9em;
             text-transform: uppercase;
-            letter-spacing: 1px;
         }
-        .btn-start { background: #00ff00; color: #000; }
-        .btn-start:hover { box-shadow: 0 0 20px rgba(0,255,0,0.5); transform: scale(1.02); }
-        .btn-stop { background: #ff3333; color: #fff; }
-        .btn-stop:hover { box-shadow: 0 0 20px rgba(255,51,51,0.5); transform: scale(1.02); }
-        .btn-reset { background: #333; color: #fff; }
-        .btn-reset:hover { background: #555; }
-        
-        .logs {
-            background: #000;
-            border: 1px solid #00ff00;
-            height: 500px;
+        .success { color: #00ff00; }
+        .failed { color: #ff4444; }
+        .status-running { color: #00ff00; animation: blink 1s infinite; }
+        .status-idle { color: #ffaa00; }
+        @keyframes blink { 50% { opacity: 0; } }
+        .log-container {
+            max-height: 400px;
             overflow-y: auto;
+            background: #000;
+            border: 1px solid #333;
             padding: 10px;
-            margin-top: 20px;
+            border-radius: 5px;
         }
-        .logs::-webkit-scrollbar { width: 8px; }
-        .logs::-webkit-scrollbar-track { background: #0a0a0a; }
-        .logs::-webkit-scrollbar-thumb { background: #00ff00; border-radius: 4px; }
-        
-        .log-entry {
-            padding: 3px 0;
-            border-bottom: 1px solid rgba(0,255,0,0.05);
-            font-size: 0.8em;
-            display: flex;
-            gap: 10px;
+        .log-container::-webkit-scrollbar { width: 5px; }
+        .log-container::-webkit-scrollbar-track { background: #1a1a1a; }
+        .log-container::-webkit-scrollbar-thumb { background: #00ff00; border-radius: 5px; }
+        .account-list {
+            max-height: 300px;
+            overflow-y: auto;
+            font-size: 0.85em;
         }
-        .log-entry .time { color: #666; min-width: 70px; }
-        .log-entry .message { flex: 1; }
-        .log-entry .proxy { color: #888; min-width: 120px; font-size: 0.8em; }
-        
+        .account-list::-webkit-scrollbar { width: 5px; }
+        .account-list::-webkit-scrollbar-track { background: #1a1a1a; }
+        .account-list::-webkit-scrollbar-thumb { background: #00ff00; border-radius: 5px; }
+        .btn-control {
+            background: #00ff00;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            font-weight: bold;
+            border-radius: 5px;
+        }
+        .btn-control:hover { background: #00cc00; color: #000; }
+        .btn-danger-custom {
+            background: #ff4444;
+            color: #fff;
+            border: none;
+            padding: 10px 20px;
+            font-weight: bold;
+            border-radius: 5px;
+        }
+        .btn-danger-custom:hover { background: #cc0000; color: #fff; }
         .level-success { color: #00ff00; }
-        .level-error { color: #ff3333; }
+        .level-error { color: #ff4444; }
         .level-warn { color: #ffaa00; }
-        .level-info { color: #aaa; }
-        
-        .status-indicator {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 10px;
-        }
-        .status-running { background: #00ff00; box-shadow: 0 0 10px rgba(0,255,0,0.5); animation: pulse 1s infinite; }
-        .status-stopped { background: #ff3333; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-        
-        @media (max-width: 600px) {
-            .stats-grid { grid-template-columns: repeat(2, 1fr); }
-            h1 { font-size: 1.5em; }
-        }
+        .level-info { color: #66ccff; }
+        .log-time { color: #888; }
+        .badge-gmail { background: #ea4335; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>⚡ ARENA</h1>
-        <div class="subtitle">Rebel X Arena Mass Account Creator | Gmail Only | Proxy Rotated</div>
+        <h1>⚡ ARENA Account Creator
+            <span class="badge-gmail">HIGH SPEED</span>
+            <span style="float:right;font-size:0.5em;color:#888;">v1.0</span>
+        </h1>
         
-        <div style="margin-bottom: 15px; font-size: 1.1em;">
-            <span class="status-indicator" id="statusIndicator"></span>
-            <span id="statusText">Checking...</span>
-            <span style="float:right;color:#888;" id="rateDisplay">Rate: 0 accounts/sec</span>
-        </div>
-        
-        <div class="stats-grid" id="statsGrid">
-            <div class="stat-box">
-                <div class="label">Total Attempts</div>
-                <div class="value green" id="val_total">0</div>
+        <div class="row mt-3">
+            <div class="col-md-4">
+                <button class="btn-control w-100" id="controlBtn" onclick="toggleCreation()">
+                    {{ '⏹ STOP' if stats.status == 'running' else '▶ START' }}
+                </button>
             </div>
-            <div class="stat-box">
-                <div class="label">Successful</div>
-                <div class="value green" id="val_success">0</div>
+            <div class="col-md-4">
+                <button class="btn-control w-100" onclick="location.reload()">⟳ REFRESH</button>
             </div>
-            <div class="stat-box">
-                <div class="label">Failed</div>
-                <div class="value red" id="val_failed">0</div>
-            </div>
-            <div class="stat-box">
-                <div class="label">Accounts Created</div>
-                <div class="value orange" id="val_created">0</div>
-            </div>
-            <div class="stat-box">
-                <div class="label">Live Proxies</div>
-                <div class="value cyan" id="val_proxies">0</div>
-            </div>
-            <div class="stat-box">
-                <div class="label">Uptime</div>
-                <div class="value purple" id="val_uptime">0s</div>
+            <div class="col-md-4">
+                <button class="btn-danger-custom w-100" onclick="clearAccounts()">🗑 CLEAR</button>
             </div>
         </div>
         
-        <div class="controls">
-            <button class="btn btn-start" id="btnStart">▶ Start</button>
-            <button class="btn btn-stop" id="btnStop">⏹ Stop</button>
-            <button class="btn btn-reset" id="btnReset">⟳ Reset Stats</button>
+        <div class="row mt-4">
+            <div class="col-md-3">
+                <div class="stat-box">
+                    <div class="stat-label">Total Attempts</div>
+                    <div class="stat-value">{{ stats.total_attempts }}</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-box">
+                    <div class="stat-label">Successful</div>
+                    <div class="stat-value success">{{ stats.successful }}</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-box">
+                    <div class="stat-label">Failed</div>
+                    <div class="stat-value failed">{{ stats.failed }}</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-box">
+                    <div class="stat-label">Rate (accounts/min)</div>
+                    <div class="stat-value">{{ "%.0f"|format(stats.rate) }}</div>
+                </div>
+            </div>
         </div>
         
-        <div class="logs" id="logContainer">
-            <div id="logEntries"></div>
+        <div class="row mt-2">
+            <div class="col-md-4">
+                <div class="stat-box">
+                    <div class="stat-label">Active Threads</div>
+                    <div class="stat-value">{{ stats.active_threads }}</div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="stat-box">
+                    <div class="stat-label">Proxy Queue</div>
+                    <div class="stat-value">{{ stats.proxies_live }}</div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="stat-box">
+                    <div class="stat-label">Status</div>
+                    <div class="stat-value {{ 'status-running' if stats.status == 'running' else 'status-idle' }}">
+                        {{ stats.status.upper() }}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="row mt-4">
+            <div class="col-md-6">
+                <h4>Recent Accounts</h4>
+                <div class="account-list">
+                    <table class="table table-dark table-sm">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Username</th>
+                                <th>Email</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for acc in stats.recent_accounts %}
+                            <tr>
+                                <td>{{ acc.time }}</td>
+                                <td>{{ acc.username }}</td>
+                                <td style="color:#66ccff;">{{ acc.email }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <h4>Live Logs</h4>
+                <div class="log-container">
+                    {% for log in stats.logs[:50] %}
+                    <div class="level-{{ log.level }}">
+                        <span class="log-time">[{{ log.time }}]</span>
+                        <span>{{ log.message }}</span>
+                        {% if log.target and log.target != 'N/A' %}
+                        <span style="color:#888;">→ {{ log.target }}</span>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        
+        <div class="row mt-4">
+            <div class="col-md-6">
+                <a href="/download" class="btn btn-success btn-sm">⬇ Download Accounts ({{ stats.accounts_created }})</a>
+            </div>
+            <div class="col-md-6 text-end">
+                <span style="color:#555;font-size:0.8em;">Started: {{ stats.start_time_str }}</span>
+            </div>
         </div>
     </div>
     
     <script>
-        let isRunning = true;
-        let autoScroll = true;
-        
-        const logContainer = document.getElementById('logContainer');
-        const logEntries = document.getElementById('logEntries');
-        
-        function fetchStats() {
-            fetch('/api/stats')
-                .then(res => res.json())
+        function toggleCreation() {
+            fetch('/toggle', { method: 'POST' })
+                .then(response => response.json())
                 .then(data => {
-                    document.getElementById('val_total').textContent = data.total_attempts;
-                    document.getElementById('val_success').textContent = data.successful;
-                    document.getElementById('val_failed').textContent = data.failed;
-                    document.getElementById('val_created').textContent = data.accounts_created;
-                    document.getElementById('val_proxies').textContent = data.proxies_live_queue;
-                    document.getElementById('val_uptime').textContent = data.uptime;
-                    document.getElementById('rateDisplay').textContent = `Rate: ${data.rate_per_second.toFixed(1)} accounts/sec`;
-                    
-                    // Update status
-                    const indicator = document.getElementById('statusIndicator');
-                    const statusText = document.getElementById('statusText');
-                    if (data.total_attempts > 0) {
-                        indicator.className = 'status-indicator status-running';
-                        statusText.textContent = 'RUNNING';
-                    } else {
-                        indicator.className = 'status-indicator status-stopped';
-                        statusText.textContent = 'STOPPED';
-                    }
-                    
-                    // Update logs
-                    if (data.logs && data.logs.length > 0) {
-                        let html = '';
-                        data.logs.forEach(log => {
-                            html += `
-                                <div class="log-entry level-${log.level}">
-                                    <span class="time">${log.time}</span>
-                                    <span class="message">${log.message}</span>
-                                    <span class="proxy">${log.proxy}</span>
-                                </div>
-                            `;
-                        });
-                        logEntries.innerHTML = html;
-                        
-                        if (autoScroll) {
-                            logContainer.scrollTop = 0;
-                        }
-                    }
-                })
-                .catch(err => console.error('Stats error:', err));
+                    location.reload();
+                });
         }
         
-        function control(action) {
-            fetch(`/api/${action}`, { method: 'POST' })
-                .then(() => setTimeout(fetchStats, 500));
+        function clearAccounts() {
+            if (confirm('Delete all accounts? This cannot be undone!')) {
+                fetch('/clear', { method: 'POST' })
+                    .then(() => location.reload());
+            }
         }
         
-        document.getElementById('btnStart').addEventListener('click', () => control('start'));
-        document.getElementById('btnStop').addEventListener('click', () => control('stop'));
-        document.getElementById('btnReset').addEventListener('click', () => {
-            if (confirm('Reset all statistics?')) control('reset');
-        });
-        
-        // Auto-scroll toggle on click
-        logContainer.addEventListener('click', () => {
-            autoScroll = !autoScroll;
-        });
-        
-        // Update every 1 second
-        setInterval(fetchStats, 1000);
-        fetchStats();
+        // Auto refresh every 5 seconds
+        setTimeout(() => location.reload(), 5000);
     </script>
 </body>
 </html>
 """
 
-# ============ MAIN ============
+# ============= FLASK ROUTES =============
+@app.route('/')
+def index():
+    """Main dashboard"""
+    with ACCOUNT_LOCK:
+        stats_copy = {
+            "total_attempts": STATE["total_attempts"],
+            "successful": STATE["successful"],
+            "failed": STATE["failed"],
+            "active_threads": STATE["active_threads"],
+            "accounts_created": len(ACCOUNTS),
+            "start_time_str": STATE["start_time_str"],
+            "status": STATE["status"],
+            "rate": STATE["rate"],
+            "proxies_live": len(PROXIES_LIVE_QUEUE),
+            "proxies_fetched": STATE["proxies_fetched"],
+            "proxies_dead": STATE["proxies_dead"],
+            "recent_accounts": list(STATE["recent_accounts"]),
+            "logs": STATE["logs"][:50]
+        }
+    return render_template_string(HTML_TEMPLATE, stats=stats_copy)
+
+@app.route('/stats')
+def get_stats():
+    """Get JSON statistics"""
+    with ACCOUNT_LOCK:
+        stats_copy = {
+            "total_attempts": STATE["total_attempts"],
+            "successful": STATE["successful"],
+            "failed": STATE["failed"],
+            "accounts_created": len(ACCOUNTS),
+            "active_threads": STATE["active_threads"],
+            "status": STATE["status"],
+            "rate": STATE["rate"],
+            "proxies_live": len(PROXIES_LIVE_QUEUE),
+            "uptime_seconds": int(time.time() - STATE["start_time"])
+        }
+    return jsonify(stats_copy)
+
+@app.route('/download')
+def download_accounts():
+    """Download all accounts as CSV"""
+    with ACCOUNT_LOCK:
+        if not ACCOUNTS:
+            return "No accounts found", 404
+        
+        csv_data = "Email,Password,Phone,Username,FirstName,LastName,UID,CreatedAt,Proxy\n"
+        for acc in ACCOUNTS:
+            csv_data += f"{acc['email']},{acc['password']},{acc['phone']},{acc['username']},{acc['first_name']},{acc['last_name']},{acc.get('uid','')},{acc['created_at']},{acc.get('proxy','')}\n"
+    
+    return csv_data, 200, {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': f'attachment; filename=arena_accounts_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+    }
+
+@app.route('/toggle', methods=['POST'])
+def toggle_creation():
+    """Start/Stop account creation"""
+    if STATE["status"] == "running":
+        stop_creation()
+        return jsonify({"status": "idle"})
+    else:
+        start_creation()
+        return jsonify({"status": "running"})
+
+@app.route('/clear', methods=['POST'])
+def clear_accounts():
+    """Clear all accounts"""
+    with ACCOUNT_LOCK:
+        ACCOUNTS.clear()
+        STATE["total_attempts"] = 0
+        STATE["successful"] = 0
+        STATE["failed"] = 0
+        STATE["recent_accounts"].clear()
+    return jsonify({"status": "cleared"})
+
+@app.route('/ping')
+def ping():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "alive",
+        "accounts": len(ACCOUNTS),
+        "time": datetime.now().isoformat()
+    })
+
+# ============= MAIN =============
+BG_THREADS_STARTED = False
+
+def init_background_threads():
+    """Initialize background threads"""
+    global BG_THREADS_STARTED
+    if not BG_THREADS_STARTED:
+        start_creation()
+        BG_THREADS_STARTED = True
+
+@app.before_request
+def activate_threads():
+    """Ensure threads start before handling requests"""
+    init_background_threads()
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     
     # Start threads
     init_background_threads()
     
-    # Run Flask
+    # Run Flask app
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
