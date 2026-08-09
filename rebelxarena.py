@@ -1,4 +1,4 @@
-# arena.py
+# rebelxarena.py
 #!/usr/bin/env python3
 """
 ARENA Unlimited Account Creator - ASYNC BATCH PROCESSING
@@ -16,19 +16,19 @@ import string
 import asyncio
 import aiohttp
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, jsonify, render_template_string, Response
 from collections import deque
 
 app = Flask(__name__)
 
 # ============= CONFIGURATION =============
-BATCH_SIZE = 100  # Accounts per batch
-MAX_CONCURRENT = 50  # Maximum concurrent requests
+BATCH_SIZE = 50  # Accounts per batch
+MAX_CONCURRENT = 30  # Maximum concurrent requests
 PROXY_BATCH_SIZE = 200
 MIN_PROXY_QUEUE = 20
-REGISTRATION_TIMEOUT = 5  # Shorter timeout since we don't wait
-BATCH_DELAY = 0.1  # Minimal delay between batches
+REGISTRATION_TIMEOUT = 10
+BATCH_DELAY = 0.05  # Minimal delay between batches
 
 # ============= GLOBAL STATE =============
 STATE = {
@@ -56,9 +56,6 @@ LOG_LOCK = threading.Lock()
 RATE_LOCK = threading.Lock()
 STOP_CREATION = threading.Event()
 BATCH_COUNTER = 0
-SUCCESS_COUNTER = 0
-FAIL_COUNTER = 0
-TOTAL_ATTEMPTS = 0
 
 # Request tracking for rate limiting
 REQUEST_TIMES = deque(maxlen=1000)
@@ -120,7 +117,7 @@ def generate_phone():
     return random.choice(['6','7','8','9']) + ''.join(random.choices(string.digits, k=9))
 
 def generate_email():
-    providers = ['gmail.com', 'gmail.com', 'gmail.com', 'yahoo.com', 'outlook.com']
+    providers = ['gmail.com', 'gmail.com', 'gmail.com']
     return f"{generate_username()}@{random.choice(providers)}"
 
 def generate_password():
@@ -198,7 +195,7 @@ def get_proxy_batch(count):
         STATE["proxies_live"] = len(PROXIES_LIVE_QUEUE)
     return proxies
 
-# ============= ASYNC ACCOUNT CREATION - FIRE AND FORGET =============
+# ============= ASYNC ACCOUNT CREATION =============
 def generate_user_data():
     """Generate user data for a single account"""
     first_name, last_name = generate_name()
@@ -212,9 +209,7 @@ def generate_user_data():
     }
 
 async def fire_registration_request(session, user_data, proxy, worker_id):
-    """Fire a registration request without waiting for full response"""
-    global SUCCESS_COUNTER, FAIL_COUNTER, TOTAL_ATTEMPTS
-    
+    """Fire a registration request and parse response"""
     proxy_url = f"http://{proxy}" if proxy else None
     
     url = "https://s2-api.digicroz.com/trpc/rebelXArena/webApp/rebelXArena/auth.register?batch=1"
@@ -248,32 +243,35 @@ async def fire_registration_request(session, user_data, proxy, worker_id):
         }
     }
     
-    TOTAL_ATTEMPTS += 1
+    with ACCOUNT_LOCK:
+        STATE["total_attempts"] += 1
     
     try:
-        # Fire the request with minimal timeout - we don't care about response
         async with session.post(
             url, 
             headers=headers, 
             json=payload,
             proxy=proxy_url,
-            timeout=aiohttp.ClientTimeout(total=2, connect=1)  # Very short timeout
+            timeout=aiohttp.ClientTimeout(total=REGISTRATION_TIMEOUT, connect=5)
         ) as response:
-            # Read only the status code, don't wait for full response
             status = response.status
             
-            # Update counters based on status
             if status == 200:
-                SUCCESS_COUNTER += 1
-                # Try to get user_id from response if available
                 try:
+                    # Parse the response to extract user data
                     result = await response.json()
+                    
+                    # Parse tRPC response format
                     if isinstance(result, list) and len(result) > 0:
                         first_result = result[0]
+                        
                         if "result" in first_result and "data" in first_result["result"]:
                             data = first_result["result"]["data"]
+                            
                             if "json" in data:
                                 json_data = data["json"]
+                                
+                                # Check for success
                                 if json_data.get("status") == "success" and "result" in json_data:
                                     user_result = json_data["result"]
                                     user_data_result = user_result.get("userData", {})
@@ -288,34 +286,77 @@ async def fire_registration_request(session, user_data, proxy, worker_id):
                                             "first_name": user_data["first_name"],
                                             "last_name": user_data["last_name"],
                                             "user_id": user_id,
+                                            "access_token": user_result.get("accessToken", "")[:50] + "...",
                                             "created_at": datetime.now().isoformat(),
                                             "proxy": proxy
                                         }
                                         
                                         with ACCOUNT_LOCK:
                                             ACCOUNTS.append(account_data)
+                                            STATE["successful"] += 1
                                             STATE["recent_accounts"].appendleft({
                                                 "email": user_data["email"],
                                                 "username": user_data["username"],
                                                 "user_id": user_id,
                                                 "time": datetime.now().strftime("%H:%M:%S")
                                             })
-                except:
-                    # Even if we can't parse JSON, status 200 is still success
-                    pass
+                                        
+                                        log_sys(f"[W{worker_id}] ✅ Account created: {user_data['username']} (ID: {user_id})", "success", target=user_data["email"], proxy=proxy)
+                                        return True, account_data
+                                    else:
+                                        log_sys(f"[W{worker_id}] No user ID in response", "warn", target=user_data["email"], proxy=proxy)
+                                else:
+                                    # Check if it's a login success (existing user)
+                                    if json_data.get("message") == "Login success":
+                                        # This means the user already exists - still count as success
+                                        with ACCOUNT_LOCK:
+                                            STATE["successful"] += 1
+                                        log_sys(f"[W{worker_id}] User already exists: {user_data['username']}", "warn", target=user_data["email"], proxy=proxy)
+                                        return True, None
+                                    else:
+                                        log_sys(f"[W{worker_id}] Status: {json_data.get('status', 'unknown')}", "warn", target=user_data["email"], proxy=proxy)
+                            else:
+                                log_sys(f"[W{worker_id}] No 'json' field in data", "warn", target=user_data["email"], proxy=proxy)
+                        else:
+                            log_sys(f"[W{worker_id}] Unexpected response structure", "warn", target=user_data["email"], proxy=proxy)
+                    else:
+                        log_sys(f"[W{worker_id}] Response is not a list or empty", "warn", target=user_data["email"], proxy=proxy)
+                        
+                except json.JSONDecodeError:
+                    log_sys(f"[W{worker_id}] Invalid JSON response", "error", target=user_data["email"], proxy=proxy)
+                    with ACCOUNT_LOCK:
+                        STATE["failed"] += 1
+                except asyncio.TimeoutError:
+                    log_sys(f"[W{worker_id}] Response timeout", "warn", target=user_data["email"], proxy=proxy)
+                    # Still count as success if we got status 200
+                    with ACCOUNT_LOCK:
+                        STATE["successful"] += 1
+                except Exception as e:
+                    log_sys(f"[W{worker_id}] Parse error: {str(e)[:50]}", "error", target=user_data["email"], proxy=proxy)
+                    with ACCOUNT_LOCK:
+                        STATE["failed"] += 1
             else:
-                FAIL_COUNTER += 1
+                log_sys(f"[W{worker_id}] HTTP {status}", "error", target=user_data["email"], proxy=proxy)
+                with ACCOUNT_LOCK:
+                    STATE["failed"] += 1
                 
     except asyncio.TimeoutError:
-        # Timeout is fine - request was sent
-        SUCCESS_COUNTER += 1  # Assume success if request was sent
-    except Exception:
-        FAIL_COUNTER += 1
+        log_sys(f"[W{worker_id}] Request timeout", "warn", target=user_data["email"], proxy=proxy)
+        with ACCOUNT_LOCK:
+            STATE["failed"] += 1
+    except aiohttp.ClientError as e:
+        log_sys(f"[W{worker_id}] Client error: {str(e)[:30]}", "error", target=user_data["email"], proxy=proxy)
+        with ACCOUNT_LOCK:
+            STATE["failed"] += 1
+    except Exception as e:
+        log_sys(f"[W{worker_id}] Error: {str(e)[:50]}", "error", target=user_data["email"], proxy=proxy)
+        with ACCOUNT_LOCK:
+            STATE["failed"] += 1
+    
+    return False, None
 
 async def fire_batch_requests(batch_id):
     """Fire a batch of registration requests asynchronously"""
-    global SUCCESS_COUNTER, FAIL_COUNTER, TOTAL_ATTEMPTS
-    
     batch_size = BATCH_SIZE
     
     # Generate user data for all accounts in batch
@@ -329,7 +370,7 @@ async def fire_batch_requests(batch_id):
         proxies.append(None)
     
     # Create connector with more connections
-    connector = aiohttp.TCPConnector(limit=0, limit_per_host=0, ttl_dns_cache=300)
+    connector = aiohttp.TCPConnector(limit=0, limit_per_host=0, ttl_dns_cache=300, force_close=True)
     
     async with aiohttp.ClientSession(connector=connector) as session:
         # Create tasks for all requests
@@ -340,17 +381,13 @@ async def fire_batch_requests(batch_id):
             )
             tasks.append(task)
         
-        # Wait for all tasks to complete (or timeout)
+        # Wait for all tasks to complete
         try:
-            await asyncio.wait(tasks, timeout=3)
-        except:
-            pass
-    
-    # Update stats
-    with ACCOUNT_LOCK:
-        STATE["total_attempts"] = TOTAL_ATTEMPTS
-        STATE["successful"] = SUCCESS_COUNTER
-        STATE["failed"] = FAIL_COUNTER
+            await asyncio.wait(tasks, timeout=REGISTRATION_TIMEOUT + 2)
+        except asyncio.TimeoutError:
+            log_sys(f"[BATCH {batch_id}] Batch timeout", "warn")
+        except Exception as e:
+            log_sys(f"[BATCH {batch_id}] Batch error: {str(e)[:50]}", "error")
     
     # Update rate
     with RATE_LOCK:
@@ -361,7 +398,7 @@ async def fire_batch_requests(batch_id):
             if newest - oldest > 0:
                 STATE["rate"] = len(REQUEST_TIMES) / (newest - oldest) * 60
     
-    log_sys(f"[BATCH {batch_id}] Fired {batch_size} requests", "info")
+    log_sys(f"[BATCH {batch_id}] Completed", "info")
 
 def run_async_batch(batch_id):
     """Run a single async batch"""
@@ -393,15 +430,10 @@ def continuous_creation():
 
 def start_creation():
     """Start the account creation process"""
-    global BG_THREADS_STARTED, SUCCESS_COUNTER, FAIL_COUNTER, TOTAL_ATTEMPTS
+    global BG_THREADS_STARTED
     
     if STATE["status"] == "running":
         return
-    
-    # Reset counters
-    SUCCESS_COUNTER = 0
-    FAIL_COUNTER = 0
-    TOTAL_ATTEMPTS = 0
     
     STOP_CREATION.clear()
     STATE["status"] = "running"
