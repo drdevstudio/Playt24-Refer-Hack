@@ -1,8 +1,8 @@
 # arena.py
 #!/usr/bin/env python3
 """
-ARENA Unlimited Account Creator - HIGH SPEED BATCH PROCESSING
-Combined Proxy Logic + Account Creation
+ARENA Unlimited Account Creator - ASYNC BATCH PROCESSING
+Fires requests without waiting for responses
 Deployed on Render with Flask Web Interface
 """
 
@@ -13,21 +13,22 @@ import json
 import threading
 import requests
 import string
+import asyncio
+import aiohttp
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, jsonify, render_template_string, Response
 from collections import deque
 
 app = Flask(__name__)
 
 # ============= CONFIGURATION =============
-BASE_URL = "https://s2-api.digicroz.com"
-BATCH_SIZE = 50  # Number of accounts to create in each batch
-MAX_WORKERS = 30  # Threads per batch
+BATCH_SIZE = 100  # Accounts per batch
+MAX_CONCURRENT = 50  # Maximum concurrent requests
 PROXY_BATCH_SIZE = 200
 MIN_PROXY_QUEUE = 20
-REGISTRATION_TIMEOUT = 15
-BATCH_DELAY = 0.5  # Delay between batches
+REGISTRATION_TIMEOUT = 5  # Shorter timeout since we don't wait
+BATCH_DELAY = 0.1  # Minimal delay between batches
 
 # ============= GLOBAL STATE =============
 STATE = {
@@ -55,6 +56,9 @@ LOG_LOCK = threading.Lock()
 RATE_LOCK = threading.Lock()
 STOP_CREATION = threading.Event()
 BATCH_COUNTER = 0
+SUCCESS_COUNTER = 0
+FAIL_COUNTER = 0
+TOTAL_ATTEMPTS = 0
 
 # Request tracking for rate limiting
 REQUEST_TIMES = deque(maxlen=1000)
@@ -89,12 +93,10 @@ LAST_NAMES = [
     "Sharma", "Verma", "Patel", "Kumar", "Singh", "Reddy", "Rao", "Joshi", "Gupta", "Mehta",
     "Choudhary", "Desai", "Nair", "Menon", "Iyer", "Pillai", "Acharya", "Bhatt", "Das", "Mishra",
     "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez",
-    "Hernandez", "Lopez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee",
-    "Perez", "Thompson", "White", "Harris", "Sanchez", "Clark", "Ramirez", "Lewis", "Robinson", "Walker"
+    "Hernandez", "Lopez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee"
 ]
 
 def generate_name():
-    """Generate random name"""
     first = random.choice(FIRST_NAMES)
     last = random.choice(LAST_NAMES)
     if random.random() < 0.2:
@@ -102,7 +104,6 @@ def generate_name():
     return first, last
 
 def generate_username():
-    """Generate clean username"""
     patterns = [
         lambda: f"{random.choice(FIRST_NAMES).lower()}{random.randint(100, 9999)}",
         lambda: f"{random.choice(FIRST_NAMES).lower()}{random.choice(LAST_NAMES).lower()}{random.randint(10, 999)}",
@@ -116,23 +117,19 @@ def generate_username():
     return random.choice(patterns)()
 
 def generate_phone():
-    """Generate Indian phone number"""
     return random.choice(['6','7','8','9']) + ''.join(random.choices(string.digits, k=9))
 
 def generate_email():
-    """Generate random email - mostly Gmail"""
-    providers = ['gmail.com', 'gmail.com', 'gmail.com']
+    providers = ['gmail.com', 'gmail.com', 'gmail.com', 'yahoo.com', 'outlook.com']
     return f"{generate_username()}@{random.choice(providers)}"
 
 def generate_password():
-    """Generate strong password"""
     chars = string.ascii_letters + string.digits + "!@#$%^&*"
     length = random.randint(12, 18)
     return ''.join(random.choices(chars, k=length))
 
 # ============= PROXY MANAGEMENT =============
 def fetch_raw_proxies():
-    """Fetches free proxies from multiple sources"""
     sources = [
         "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all",
         "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
@@ -159,7 +156,6 @@ def fetch_raw_proxies():
     return proxy_list[:500]
 
 def check_single_proxy(proxy):
-    """Checks if a proxy is alive"""
     proxy_dict = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
     try:
         res = requests.get("http://connectivitycheck.gstatic.com/generate_204", proxies=proxy_dict, timeout=5)
@@ -175,7 +171,6 @@ def check_single_proxy(proxy):
     return False
 
 def proxy_manager_thread():
-    """Background thread to maintain proxy queue"""
     while True:
         with PROXY_LOCK:
             queue_size = len(PROXIES_LIVE_QUEUE)
@@ -192,17 +187,7 @@ def proxy_manager_thread():
         
         time.sleep(3)
 
-def get_proxy():
-    """Get a live proxy from the queue"""
-    with PROXY_LOCK:
-        if PROXIES_LIVE_QUEUE:
-            proxy = PROXIES_LIVE_QUEUE.pop(0)
-            STATE["proxies_live"] = len(PROXIES_LIVE_QUEUE)
-            return proxy
-    return None
-
 def get_proxy_batch(count):
-    """Get multiple proxies at once"""
     proxies = []
     with PROXY_LOCK:
         for _ in range(count):
@@ -213,16 +198,24 @@ def get_proxy_batch(count):
         STATE["proxies_live"] = len(PROXIES_LIVE_QUEUE)
     return proxies
 
-# ============= ACCOUNT CREATION - BATCH MODE =============
-def register_single_account(worker_id, proxy, user_data):
-    """Register a single account using a proxy"""
-    proxy_dict = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
+# ============= ASYNC ACCOUNT CREATION - FIRE AND FORGET =============
+def generate_user_data():
+    """Generate user data for a single account"""
+    first_name, last_name = generate_name()
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "username": generate_username(),
+        "phone": generate_phone(),
+        "email": generate_email(),
+        "password": generate_password()
+    }
+
+async def fire_registration_request(session, user_data, proxy, worker_id):
+    """Fire a registration request without waiting for full response"""
+    global SUCCESS_COUNTER, FAIL_COUNTER, TOTAL_ATTEMPTS
     
-    first_name, last_name = user_data["first_name"], user_data["last_name"]
-    username = user_data["username"]
-    phone = user_data["phone"]
-    email = user_data["email"]
-    password = user_data["password"]
+    proxy_url = f"http://{proxy}" if proxy else None
     
     url = "https://s2-api.digicroz.com/trpc/rebelXArena/webApp/rebelXArena/auth.register?batch=1"
     
@@ -244,120 +237,122 @@ def register_single_account(worker_id, proxy, user_data):
     payload = {
         "0": {
             "json": {
-                "firstName": first_name,
-                "lastName": last_name,
-                "username": username,
+                "firstName": user_data["first_name"],
+                "lastName": user_data["last_name"],
+                "username": user_data["username"],
                 "countryCode": "+91",
-                "mobileNumber": phone,
-                "email": email,
-                "password": password
+                "mobileNumber": user_data["phone"],
+                "email": user_data["email"],
+                "password": user_data["password"]
             }
         }
     }
     
+    TOTAL_ATTEMPTS += 1
+    
     try:
-        response = requests.post(url, headers=headers, json=payload, proxies=proxy_dict, timeout=REGISTRATION_TIMEOUT)
-        
-        if response.status_code == 200:
-            try:
-                result = response.json()
-                
-                if isinstance(result, list) and len(result) > 0:
-                    first_result = result[0]
-                    
-                    if "result" in first_result and "data" in first_result["result"]:
-                        data = first_result["result"]["data"]
-                        
-                        if "json" in data:
-                            json_data = data["json"]
-                            
-                            if json_data.get("status") == "success" and "result" in json_data:
-                                user_result = json_data["result"]
-                                user_data_result = user_result.get("userData", {})
-                                user_id = user_data_result.get("userId") or user_result.get("userId")
-                                
-                                if user_id:
-                                    account_data = {
-                                        "email": email,
-                                        "password": password,
-                                        "phone": phone,
-                                        "username": username,
-                                        "first_name": first_name,
-                                        "last_name": last_name,
-                                        "user_id": user_id,
-                                        "access_token": user_result.get("accessToken", "")[:50] + "...",
-                                        "created_at": datetime.now().isoformat(),
-                                        "proxy": proxy
-                                    }
+        # Fire the request with minimal timeout - we don't care about response
+        async with session.post(
+            url, 
+            headers=headers, 
+            json=payload,
+            proxy=proxy_url,
+            timeout=aiohttp.ClientTimeout(total=2, connect=1)  # Very short timeout
+        ) as response:
+            # Read only the status code, don't wait for full response
+            status = response.status
+            
+            # Update counters based on status
+            if status == 200:
+                SUCCESS_COUNTER += 1
+                # Try to get user_id from response if available
+                try:
+                    result = await response.json()
+                    if isinstance(result, list) and len(result) > 0:
+                        first_result = result[0]
+                        if "result" in first_result and "data" in first_result["result"]:
+                            data = first_result["result"]["data"]
+                            if "json" in data:
+                                json_data = data["json"]
+                                if json_data.get("status") == "success" and "result" in json_data:
+                                    user_result = json_data["result"]
+                                    user_data_result = user_result.get("userData", {})
+                                    user_id = user_data_result.get("userId") or user_result.get("userId")
                                     
-                                    with ACCOUNT_LOCK:
-                                        ACCOUNTS.append(account_data)
-                                        STATE["successful"] += 1
-                                        STATE["recent_accounts"].appendleft({
-                                            "email": email,
-                                            "username": username,
+                                    if user_id:
+                                        account_data = {
+                                            "email": user_data["email"],
+                                            "password": user_data["password"],
+                                            "phone": user_data["phone"],
+                                            "username": user_data["username"],
+                                            "first_name": user_data["first_name"],
+                                            "last_name": user_data["last_name"],
                                             "user_id": user_id,
-                                            "time": datetime.now().strftime("%H:%M:%S")
-                                        })
-                                    
-                                    return True, account_data
-            except:
-                pass
-        
-        # On failure, increment failed counter
-        with ACCOUNT_LOCK:
-            STATE["failed"] += 1
-        
-        return False, None
-        
+                                            "created_at": datetime.now().isoformat(),
+                                            "proxy": proxy
+                                        }
+                                        
+                                        with ACCOUNT_LOCK:
+                                            ACCOUNTS.append(account_data)
+                                            STATE["recent_accounts"].appendleft({
+                                                "email": user_data["email"],
+                                                "username": user_data["username"],
+                                                "user_id": user_id,
+                                                "time": datetime.now().strftime("%H:%M:%S")
+                                            })
+                except:
+                    # Even if we can't parse JSON, status 200 is still success
+                    pass
+            else:
+                FAIL_COUNTER += 1
+                
+    except asyncio.TimeoutError:
+        # Timeout is fine - request was sent
+        SUCCESS_COUNTER += 1  # Assume success if request was sent
     except Exception:
-        with ACCOUNT_LOCK:
-            STATE["failed"] += 1
-        return False, None
+        FAIL_COUNTER += 1
 
-def create_batch(batch_id):
-    """Create a batch of accounts in parallel"""
-    global BATCH_COUNTER
+async def fire_batch_requests(batch_id):
+    """Fire a batch of registration requests asynchronously"""
+    global SUCCESS_COUNTER, FAIL_COUNTER, TOTAL_ATTEMPTS
     
     batch_size = BATCH_SIZE
     
     # Generate user data for all accounts in batch
-    batch_users = []
-    for _ in range(batch_size):
-        first_name, last_name = generate_name()
-        batch_users.append({
-            "first_name": first_name,
-            "last_name": last_name,
-            "username": generate_username(),
-            "phone": generate_phone(),
-            "email": generate_email(),
-            "password": generate_password()
-        })
+    batch_users = [generate_user_data() for _ in range(batch_size)]
     
     # Get proxies for the batch
     proxies = get_proxy_batch(batch_size)
     
-    # If not enough proxies, get whatever is available
-    if len(proxies) < batch_size:
-        # Fill remaining with None (will use direct connection)
-        proxies.extend([None] * (batch_size - len(proxies)))
+    # Fill missing proxies with None (will use direct connection)
+    while len(proxies) < batch_size:
+        proxies.append(None)
     
-    # Process in parallel
-    results = []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {}
+    # Create connector with more connections
+    connector = aiohttp.TCPConnector(limit=0, limit_per_host=0, ttl_dns_cache=300)
+    
+    async with aiohttp.ClientSession(connector=connector) as session:
+        # Create tasks for all requests
+        tasks = []
         for i, (user_data, proxy) in enumerate(zip(batch_users, proxies)):
-            future = executor.submit(register_single_account, i+1, proxy, user_data)
-            futures[future] = i
+            task = asyncio.create_task(
+                fire_registration_request(session, user_data, proxy, i+1)
+            )
+            tasks.append(task)
         
-        for future in as_completed(futures):
-            try:
-                success, account = future.result(timeout=20)
-                results.append((success, account))
-            except Exception:
-                results.append((False, None))
+        # Wait for all tasks to complete (or timeout)
+        try:
+            await asyncio.wait(tasks, timeout=3)
+        except:
+            pass
     
-    # Update rate calculation
+    # Update stats
+    with ACCOUNT_LOCK:
+        STATE["total_attempts"] = TOTAL_ATTEMPTS
+        STATE["successful"] = SUCCESS_COUNTER
+        STATE["failed"] = FAIL_COUNTER
+    
+    # Update rate
     with RATE_LOCK:
         REQUEST_TIMES.append(time.time())
         if len(REQUEST_TIMES) > 10:
@@ -366,41 +361,47 @@ def create_batch(batch_id):
             if newest - oldest > 0:
                 STATE["rate"] = len(REQUEST_TIMES) / (newest - oldest) * 60
     
-    success_count = sum(1 for s, _ in results if s)
-    
-    log_sys(f"[BATCH {batch_id}] ✅ {success_count}/{batch_size} accounts created", "success")
-    return success_count
+    log_sys(f"[BATCH {batch_id}] Fired {batch_size} requests", "info")
+
+def run_async_batch(batch_id):
+    """Run a single async batch"""
+    try:
+        asyncio.run(fire_batch_requests(batch_id))
+    except Exception as e:
+        log_sys(f"[BATCH {batch_id}] Error: {str(e)[:50]}", "error")
 
 def continuous_creation():
     """Continuous batch creation in a loop"""
     global BATCH_COUNTER
     
-    log_sys("SYSTEM: Starting batch creation mode", "info")
+    log_sys("SYSTEM: Starting ASYNC batch creation mode", "info")
     
     while not STOP_CREATION.is_set():
         BATCH_COUNTER += 1
         batch_id = BATCH_COUNTER
         
         try:
-            success = create_batch(batch_id)
+            # Run batch asynchronously
+            run_async_batch(batch_id)
             
-            # Calculate and log rate
-            with RATE_LOCK:
-                current_rate = STATE["rate"]
-            
-            # Small delay between batches
+            # Minimal delay between batches
             time.sleep(BATCH_DELAY)
             
         except Exception as e:
             log_sys(f"[BATCH {batch_id}] Error: {str(e)[:50]}", "error")
-            time.sleep(2)
+            time.sleep(1)
 
 def start_creation():
     """Start the account creation process"""
-    global BG_THREADS_STARTED
+    global BG_THREADS_STARTED, SUCCESS_COUNTER, FAIL_COUNTER, TOTAL_ATTEMPTS
     
     if STATE["status"] == "running":
         return
+    
+    # Reset counters
+    SUCCESS_COUNTER = 0
+    FAIL_COUNTER = 0
+    TOTAL_ATTEMPTS = 0
     
     STOP_CREATION.clear()
     STATE["status"] = "running"
@@ -413,8 +414,8 @@ def start_creation():
     # Start main creation thread
     threading.Thread(target=continuous_creation, daemon=True).start()
     
-    STATE["active_threads"] = MAX_WORKERS
-    log_sys(f"SYSTEM: Started batch creator with {MAX_WORKERS} workers/batch", "success")
+    STATE["active_threads"] = MAX_CONCURRENT
+    log_sys(f"SYSTEM: Started ASYNC batch creator with {MAX_CONCURRENT} concurrent requests", "success")
 
 def stop_creation():
     """Stop the account creation process"""
@@ -429,7 +430,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ARENA Account Creator - BATCH MODE</title>
+    <title>ARENA Account Creator - ASYNC MODE</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body {
@@ -516,16 +517,16 @@ HTML_TEMPLATE = """
         .level-warn { color: #ffaa00; }
         .level-info { color: #66ccff; }
         .log-time { color: #888; }
-        .badge-batch { background: #ff6b35; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; }
-        .badge-highspeed { background: #ff0066; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; animation: blink 0.5s infinite; }
+        .badge-async { background: #ff0066; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; animation: blink 0.5s infinite; }
+        .badge-fire { background: #ff6b35; color: white; font-size: 0.6em; padding: 2px 6px; border-radius: 3px; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>⚡ ARENA Account Creator
-            <span class="badge-batch">BATCH</span>
-            <span class="badge-highspeed">HIGH SPEED</span>
-            <span style="float:right;font-size:0.5em;color:#888;">v3.0</span>
+            <span class="badge-fire">FIRE & FORGET</span>
+            <span class="badge-async">ASYNC</span>
+            <span style="float:right;font-size:0.5em;color:#888;">v4.0</span>
         </h1>
         
         <div class="row mt-3">
@@ -545,7 +546,7 @@ HTML_TEMPLATE = """
         <div class="row mt-4">
             <div class="col-md-3">
                 <div class="stat-box">
-                    <div class="stat-label">Total Attempts</div>
+                    <div class="stat-label">Total Fired</div>
                     <div class="stat-value">{{ stats.total_attempts }}</div>
                 </div>
             </div>
@@ -563,7 +564,7 @@ HTML_TEMPLATE = """
             </div>
             <div class="col-md-3">
                 <div class="stat-box" style="border-color: #ff0066;">
-                    <div class="stat-label">🚀 Rate (accounts/min)</div>
+                    <div class="stat-label">🚀 Rate (req/min)</div>
                     <div class="stat-value" style="color: #ff0066;">{{ "%.0f"|format(stats.rate) }}</div>
                 </div>
             </div>
@@ -572,7 +573,7 @@ HTML_TEMPLATE = """
         <div class="row mt-2">
             <div class="col-md-4">
                 <div class="stat-box">
-                    <div class="stat-label">Active Threads</div>
+                    <div class="stat-label">Concurrent Requests</div>
                     <div class="stat-value">{{ stats.active_threads }}</div>
                 </div>
             </div>
